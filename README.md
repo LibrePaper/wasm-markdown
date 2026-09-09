@@ -31,6 +31,33 @@ make test                                  # the renderer's tests, natively
 
 Nothing but cargo is needed. There is no bindgen step.
 
+## Serving it
+
+`make compress` writes `dist/markdown.wasm.br` and `dist/markdown.wasm.gz`
+beside the module. A module is compressed once and fetched many times, so
+doing it here beats doing it per request at whatever quality a server can
+afford inside one:
+
+| | Size | Saving |
+| --- | ---: | ---: |
+| raw | 388 KiB | |
+| brotli, q11 | **105 KiB** | 72.9% |
+| gzip, level 9 | 130 KiB | 66.5% |
+
+Brotli quality 11 with a 16 MB window (`lgwin` 24) is the most the format
+allows a browser to decode — above 24 is brotli's large-window extension, which
+no browser implements. Compressing this module takes about half a second.
+
+Serve the precompressed file with `Content-Encoding: br`, `Vary:
+Accept-Encoding`, and — this is the one that bites —
+`Content-Type: application/wasm`. `WebAssembly.instantiateStreaming` rejects
+anything else, and the content type describes the module, not the encoding it
+arrived in.
+
+The compression step is the only thing in this repository that needs node. It
+uses `node:zlib`, so there is nothing to install, and a build without node
+still produces the module.
+
 ## The interface
 
 Plain WebAssembly exports over linear memory rather than wasm-bindgen, so the
