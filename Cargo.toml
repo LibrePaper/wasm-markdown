@@ -3,7 +3,7 @@
 name = "librepaper-wasm-markdown"
 version = "0.1.0"
 edition = "2021"
-license = "GPL-3.0-or-later"
+license = "MIT"
 description = "CommonMark and GitHub extensions to standalone HTML, as a WebAssembly module"
 repository = "https://github.com/LibrePaper/librepaper-wasm-markdown"
 
