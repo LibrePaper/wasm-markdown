@@ -1,2 +1,4 @@
 /target
 /dist
+# Local cross-repo development: see the README.
+/.cargo/config.toml
