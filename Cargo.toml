@@ -1,0 +1,26 @@
+# The markdown renderer, as a WebAssembly module.
+[package]
+name = "librepaper-wasm-markdown"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "CommonMark and GitHub extensions to standalone HTML, as a WebAssembly module"
+repository = "https://github.com/LibrePaper/librepaper-wasm-markdown"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "markdown_wasm"
+
+[dependencies]
+# CommonMark plus the GitHub extensions: tables, strikethrough, task lists,
+# autolinks, footnotes.
+comrak = { version = "0.54", default-features = false }
+
+# As small as it can be: this module is fetched by every editor that opens a
+# document, so its size is a cost every reader pays.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
