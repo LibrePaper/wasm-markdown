@@ -12,7 +12,13 @@ repository = "https://github.com/LibrePaper/wasm-markdown"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
-name = "markdown_wasm"
+
+[features]
+# On for this crate's own module, and off when another crate links it as a
+# library: a `#[no_mangle]` export belongs to exactly one cdylib, and two sets
+# of them do not link.
+default = ["exports"]
+exports = []
 
 [dependencies]
 # The shared page template, diagnostics and WebAssembly interface. A path

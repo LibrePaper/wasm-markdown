@@ -5,7 +5,7 @@
 # name a host loads it by. `rustup target add wasm32-unknown-unknown` once.
 
 MODULE  := markdown.wasm
-TARGET  := target/wasm32-unknown-unknown/release/markdown_wasm.wasm
+TARGET  := target/wasm32-unknown-unknown/release/wasm_markdown.wasm
 VERSION := $(shell grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 SOURCES := $(shell find src Cargo.toml -type f 2>/dev/null) $(shell find ../wasm-helpers/src ../wasm-helpers/document.css -type f 2>/dev/null)
 # sops-encrypted, and committed that way -- the point of sops is that the
