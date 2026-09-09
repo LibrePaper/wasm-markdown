@@ -84,14 +84,18 @@ the module's business, not the host's.
 
 See `src/abi.rs`, which documents the convention in full.
 
-## Keeping in step with the application
+## Keeping in step
 
-`src/text.rs` is vendored from `crates/text/src/lib.rs` in the LibrePaper
-application repository. The editor's history panel asks this module for the
-same diff the native side computes, so the two must tokenise identically. It is
-a verbatim copy — `merge` comes along unused rather than being carved out — so
-that a diff against upstream is empty and drift is visible at a glance. Changes
-belong upstream first.
+The page template, the diagnostics type, the word diff and the WebAssembly
+interface come from
+[librepaper-wasm-helpers](https://github.com/LibrePaper/librepaper-wasm-helpers),
+whose version is the interface's version: if a host has to be called
+differently, that crate changes and this one fails to compile until it is
+rebuilt.
+
+The word diff inside it is vendored from the application repository, because
+the editor's history panel asks this module for the same diff the native side
+computes. Changes to it belong upstream first.
 
 ## Licence
 

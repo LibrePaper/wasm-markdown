@@ -12,6 +12,10 @@ crate-type = ["cdylib", "rlib"]
 name = "markdown_wasm"
 
 [dependencies]
+# The shared page template, diagnostics and WebAssembly interface. A path
+# dependency while the repositories sit side by side; it becomes a git
+# dependency pinned to a tag once they are pushed.
+librepaper-wasm-helpers = { path = "../librepaper-wasm-helpers" }
 # CommonMark plus the GitHub extensions: tables, strikethrough, task lists,
 # autolinks, footnotes.
 comrak = { version = "0.54", default-features = false }
