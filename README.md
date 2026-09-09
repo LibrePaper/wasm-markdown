@@ -68,7 +68,15 @@ belong upstream first.
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
+Copyright (C) 2026 Vincent Arel-Bundock.
 
-Its one dependency, [comrak](https://github.com/kivikakk/comrak), carries its
-own licence.
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. It is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License in [LICENSE](LICENSE) for
+more details.
+
+Its one dependency, [comrak](https://github.com/kivikakk/comrak), is
+BSD-2-Clause, which the GPL permits combining with.
