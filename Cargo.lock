@@ -53,18 +53,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47f142fe24a9c9944451e8349de0a56af5f3e7226dc46f3ed4d4ecc0b85af75e"
 
 [[package]]
-name = "librepaper-wasm-helpers"
-version = "0.1.0"
-
-[[package]]
-name = "librepaper-wasm-markdown"
-version = "0.1.0"
-dependencies = [
- "comrak",
- "librepaper-wasm-helpers",
-]
-
-[[package]]
 name = "phf"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -213,4 +201,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
 dependencies = [
  "tinyvec",
+]
+
+[[package]]
+name = "wasm-helpers"
+version = "0.1.0"
+
+[[package]]
+name = "wasm-markdown"
+version = "0.1.0"
+dependencies = [
+ "comrak",
+ "wasm-helpers",
 ]

@@ -7,7 +7,7 @@
 MODULE  := markdown.wasm
 TARGET  := target/wasm32-unknown-unknown/release/markdown_wasm.wasm
 VERSION := $(shell grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-SOURCES := $(shell find src Cargo.toml -type f 2>/dev/null) $(shell find ../librepaper-wasm-helpers/src ../librepaper-wasm-helpers/document.css -type f 2>/dev/null)
+SOURCES := $(shell find src Cargo.toml -type f 2>/dev/null) $(shell find ../wasm-helpers/src ../wasm-helpers/document.css -type f 2>/dev/null)
 # sops-encrypted, and committed that way -- the point of sops is that the
 # encrypted file is safe in the repository. Only needed if this module is ever
 # published somewhere that wants a credential; releasing through gh does not.

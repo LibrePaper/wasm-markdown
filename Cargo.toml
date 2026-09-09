@@ -1,11 +1,14 @@
 # The markdown renderer, as a WebAssembly module.
 [package]
-name = "librepaper-wasm-markdown"
+name = "wasm-markdown"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+# Never goes to crates.io: these are consumed by path while the repositories
+# sit side by side, and by git tag once they are pushed.
+publish = false
 description = "CommonMark and GitHub extensions to standalone HTML, as a WebAssembly module"
-repository = "https://github.com/LibrePaper/librepaper-wasm-markdown"
+repository = "https://github.com/LibrePaper/wasm-markdown"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -15,7 +18,7 @@ name = "markdown_wasm"
 # The shared page template, diagnostics and WebAssembly interface. A path
 # dependency while the repositories sit side by side; it becomes a git
 # dependency pinned to a tag once they are pushed.
-librepaper-wasm-helpers = { path = "../librepaper-wasm-helpers" }
+wasm-helpers = { path = "../wasm-helpers" }
 # CommonMark plus the GitHub extensions: tables, strikethrough, task lists,
 # autolinks, footnotes.
 comrak = { version = "0.54", default-features = false }
