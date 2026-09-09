@@ -1,0 +1,13 @@
+# Credentials for publishing, if this module is ever published somewhere that
+# needs one. Releasing through `gh` does not: it uses your existing gh login.
+#
+# Encrypt in place before committing -- sops-encrypted files belong in the
+# repository, that is the point of them:
+#
+#     cp .keys.yaml.example .keys.yaml
+#     $EDITOR .keys.yaml
+#     sops -e -i --pgp B84CF1587A9E41A4C8B05990831F3F76EE332BF2 .keys.yaml
+#
+# Then `make secrets` opens a shell with these in its environment.
+
+CLOUDFLARE_API_TOKEN: ""
