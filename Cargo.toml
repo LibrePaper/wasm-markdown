@@ -1,0 +1,39 @@
+# The markdown renderer, as a WebAssembly module.
+[package]
+name = "wasm-markdown"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+# Never goes to crates.io: the renderers are consumed by git tag.
+publish = false
+description = "CommonMark and GitHub extensions to standalone HTML, as a WebAssembly module"
+repository = "https://github.com/LibrePaper/wasm-markdown"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# On for this crate's own module, and off when another crate links it as a
+# library: a `#[no_mangle]` export belongs to exactly one cdylib, and two sets
+# of them do not link.
+default = ["exports"]
+exports = []
+
+[dependencies]
+# The shared page template, diagnostics and WebAssembly interface, pinned to
+# a tag. A change over there is pushed and tagged first, then the tag moves
+# here: a path patch would be written into Cargo.lock, and a clean clone
+# could not build --locked.
+wasm-helpers = { git = "https://github.com/LibrePaper/wasm-helpers", tag = "v0.1.1" }
+# CommonMark plus the GitHub extensions: tables, strikethrough, task lists,
+# autolinks, footnotes.
+comrak = { version = "0.54", default-features = false }
+
+# As small as it can be: this module is fetched by every editor that opens a
+# document, so its size is a cost every reader pays.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
