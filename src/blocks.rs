@@ -219,7 +219,8 @@ mod tests {
         assert!(blocks[0].html.contains("<h1>T</h1>"), "{}", blocks[0].html);
         assert!(blocks[1].html.contains("<a class=\"quarto-crossref\" href=\"#fig-x\">Figure 1</a>"), "{}", blocks[1].html);
         assert!(blocks[2].html.contains("plot(1)"));
-        assert!(blocks[3].html.starts_with("<pre"), "a div is shown as source: {}", blocks[3].html);
+        assert!(blocks[3].html.starts_with("<div class=\"note\">"), "a div is rendered: {}", blocks[3].html);
+        assert!(blocks[3].html.contains("<p>Hi</p>") && blocks[3].html.ends_with("</div>"), "{}", blocks[3].html);
     }
 
     #[test]

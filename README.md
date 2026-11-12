@@ -99,13 +99,15 @@ See `src/abi.rs`, which documents the convention in full.
 When the main file named by `set_main` ends in `.qmd`, `compile`, `draft` and
 `compile_blocks` read the source as Quarto; anything else is Markdown exactly
 as before. Quarto is a dialect of this renderer, not a second one: the source
-is first turned into a Markdown *draft* (`src/quarto.rs`), and comrak renders
+is first turned into a Markdown *draft* (`src/quarto/`), and comrak renders
 that. Nothing is executed. The draft has
 
 - the front matter as a title block (title, authors, date, abstract);
 - each executable cell shown verbatim, or, when the host passes the output of
   a run, as its code followed by that output;
-- top-level `:::` divs and shortcodes other than `include` shown verbatim;
+- `:::` divs, at any depth, as `<div id class>` elements around their
+  rendered Markdown (markup vocabulary in `docs/quarto-markup.md`), and
+  shortcodes other than `include` shown verbatim;
 - `{{< include >}}` expanded from the files added with `add_file`;
 - `@fig-`, `@tbl-`, `@sec-`, `@eq-` and `@lst-` references turned into
   numbered links, and `[text]{#id}` into a span.
