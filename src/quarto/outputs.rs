@@ -255,7 +255,12 @@ fn kept_classes(e: &Elem) -> Option<Vec<String>> {
             }
             !(matches!(
                 **t,
-                "img-fluid" | "figure-img" | "figure" | "anchored" | "table" | "small"
+                "img-fluid"
+                    | "figure-img"
+                    | "figure"
+                    | "anchored"
+                    | "table"
+                    | "small"
                     | "caption-top"
             ) || t.starts_with("quarto-")
                 || t.starts_with("table-"))
@@ -291,7 +296,11 @@ fn open_tag_html(e: &Elem) -> String {
             None => s.push_str(&format!(" {key}")),
         }
     }
-    s.push_str(if e.raw_open.ends_with("/>") { " />" } else { ">" });
+    s.push_str(if e.raw_open.ends_with("/>") {
+        " />"
+    } else {
+        ">"
+    });
     s
 }
 
@@ -344,7 +353,9 @@ fn strip_label(text: &str) -> Option<&str> {
     let word = &t[..digit];
     if word.is_empty()
         || word.len() > 40
-        || !word.chars().all(|c| c.is_alphabetic() || c == ' ' || c == '.')
+        || !word
+            .chars()
+            .all(|c| c.is_alphabetic() || c == ' ' || c == '.')
     {
         return None;
     }
@@ -366,9 +377,7 @@ fn write_float(e: &Elem, kind: &str, st: &mut State, out: &mut String) {
         .map(str::to_string)
         .or_else(|| st.pending_id.take());
     st.pending_id = None;
-    let ours = st
-        .label
-        .take_if(|l| l.starts_with(&format!("{kind}-")));
+    let ours = st.label.take_if(|l| l.starts_with(&format!("{kind}-")));
     let id = ours.clone().or(quarto_id);
     let caption_at = e.children.iter().position(is_caption);
     let mut body = String::new();
@@ -434,8 +443,8 @@ pub(crate) fn normalize(html: &str, cell: &Cell, ctx: &Context) -> String {
     let Some(nodes) = parse(html) else {
         return html.to_string();
     };
-    let label = (!cell.label.is_empty() && ctx.refs.has_target(&cell.label))
-        .then(|| cell.label.clone());
+    let label =
+        (!cell.label.is_empty() && ctx.refs.has_target(&cell.label)).then(|| cell.label.clone());
     let mut st = State {
         ctx,
         label,
@@ -486,8 +495,17 @@ mod tests {
         assert!(d.contains(figure), "{d}");
         assert_eq!(d.matches("id=\"fig-plot\"").count(), 1, "{d}");
         assert!(d.contains("href=\"#fig-plot\">Figure 1</a>"), "{d}");
-        for gone in ["quarto-", "img-fluid", "figure-img", "role=", "anchored", "aria-"] {
-            assert!(!d.contains(gone), "{gone}: {d}");
+        // The output is clean; the reference link keeps `quarto-crossref`.
+        let output = &d[d.find("<div class=\"cell-output").unwrap()..d.find("See ").unwrap()];
+        for gone in [
+            "quarto-",
+            "img-fluid",
+            "figure-img",
+            "role=",
+            "anchored",
+            "aria-",
+        ] {
+            assert!(!output.contains(gone), "{gone}: {output}");
         }
     }
 
@@ -521,7 +539,8 @@ mod tests {
     fn without_a_label_of_ours_quarto_keeps_its_caption_and_id() {
         let d = shown("```{r}\nx()\n```\n", FIG);
         assert!(
-            d.contains("<figure class=\"figure\" id=\"fig-plot\">") && d.contains("Figure 1: A plot"),
+            d.contains("<figure class=\"figure\" id=\"fig-plot\">")
+                && d.contains("Figure 1: A plot"),
             "{d}"
         );
         assert!(!d.contains("caption-label"), "{d}");
@@ -560,7 +579,10 @@ mod tests {
             "<!-- never closed",
             "<a href=>x</a><div",
         ] {
-            assert!(parse(html).is_none() || html == "<a href=>x</a><div", "{html}");
+            assert!(
+                parse(html).is_none() || html == "<a href=>x</a><div",
+                "{html}"
+            );
         }
         let d = shown("```{r}\nx()\n```\n", "<div class=\"cell\"><b>open");
         assert!(d.contains("<div class=\"cell\"><b>open"), "{d}");

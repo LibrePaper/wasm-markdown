@@ -254,9 +254,9 @@ pub(crate) fn display(
     // A labelled cell has exactly one element with its id: the saved float
     // when it carries it, an empty anchor before the code otherwise.
     if !cell.label.is_empty() && ctx.refs.has_target(&cell.label) {
-        let carried = html
-            .as_ref()
-            .is_some_and(|(_, h)| h.contains(&format!("id=\"{}\"", crate::page::escape(&cell.label))));
+        let carried = html.as_ref().is_some_and(|(_, h)| {
+            h.contains(&format!("id=\"{}\"", crate::page::escape(&cell.label)))
+        });
         if !carried {
             out.block(
                 &format!("<span id=\"{}\"></span>", crate::page::escape(&cell.label)),
