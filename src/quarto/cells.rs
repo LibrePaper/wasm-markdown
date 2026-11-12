@@ -151,54 +151,114 @@ pub(crate) fn build_cell(fence: &OpenFence, lines: &[&str], end: usize) -> Cell 
     }
 }
 
-/// Puts a cell in the draft: with a saved output, its code (unless `echo` is
-/// off) followed by the output; without one, the whole cell as source. The
-/// generated lines belong to the cell, so the editor folds them into it.
+fn is_off(value: Option<&Yaml>) -> bool {
+    matches!(value, Some(Yaml::Bool(false))) || matches!(value, Some(Yaml::Str(s)) if s == "false")
+}
+
+/// A document-level code option: the top level of the front matter, then
+/// `format:` (the reader flattens `format: html:` into `format`).
+fn format_option<'a>(ctx: &Context<'a>, key: &str) -> Option<&'a Yaml> {
+    let meta: &'a Map = ctx.meta;
+    let nonnull = |v: &'a Yaml| (*v != Yaml::Null).then_some(v);
+    if let Some(Yaml::Map(format)) = get(meta, "format") {
+        if let Some(Yaml::Map(html)) = get(format, "html") {
+            if let Some(v) = get(html, key).and_then(nonnull) {
+                return Some(v);
+            }
+        }
+        if let Some(v) = get(format, key).and_then(nonnull) {
+            return Some(v);
+        }
+    }
+    get(meta, key).and_then(nonnull)
+}
+
+/// The code of a cell as a plain code block, as Quarto shows source: no
+/// braces on the fence, no `#|` lines; with the file name above it and inside
+/// a `<details>` when it folds. The lines of the code keep their source line.
+fn show_code(cell: &Cell, ctx: &Context, out: &mut Out) {
+    let span = (cell.start, cell.end);
+    let code = cell.code.join("\n");
+    if code.trim().is_empty() {
+        return;
+    }
+    let fold = option(&cell.options, &[], "code-fold")
+        .or_else(|| format_option(ctx, "code-fold"))
+        .map(|v| v.text())
+        .unwrap_or_default();
+    let folded = matches!(fold.as_str(), "true" | "show");
+    if folded {
+        let summary = option(&cell.options, &[], "code-summary")
+            .or_else(|| format_option(ctx, "code-summary"))
+            .map(|v| v.text())
+            .filter(|t| !t.trim().is_empty())
+            // `Strings` is not ours: the default summary is a literal.
+            .unwrap_or_else(|| "Code".to_string());
+        let open = if fold == "show" { " open" } else { "" };
+        out.block(
+            &format!(
+                "<details class=\"code-fold\"{open}><summary>{}</summary>",
+                crate::page::escape(&summary)
+            ),
+            span,
+        );
+    }
+    if let Some(name) = option(&cell.options, &[], "filename")
+        .map(|v| v.text())
+        .filter(|t| !t.trim().is_empty())
+    {
+        out.block(
+            &format!("<div class=\"code-filename\">{}</div>", crate::page::escape(&name)),
+            span,
+        );
+    }
+    let body = cell.end - cell.start - 1;
+    let first = cell.start + 1 + body.saturating_sub(cell.code.len());
+    let fence = verbatim_fence(&code);
+    out.push(&format!("{fence}{}", cell.language), None, span);
+    for (n, line) in cell.code.iter().enumerate() {
+        out.push(line, Some(first + n), span);
+    }
+    out.push(&fence, None, span);
+    if folded {
+        out.block("</details>", span);
+    }
+}
+
+/// Puts a cell in the draft, as Quarto shows it: its code (unless `echo` is
+/// off) as a plain code block, then the saved output if the host passed one
+/// (unless `output` is off or `eval` is false). `include: false` hides all of
+/// it. The generated lines belong to the cell, so the editor folds them into it.
 pub(crate) fn display(
     cell: &Cell,
     output: Option<&Output>,
-    lines: &[&str],
+    _lines: &[&str],
     ctx: &mut Context,
     out: &mut Out,
 ) {
     let span = (cell.start, cell.end);
-    match output {
-        Some(output) => {
-            // Shown as Quarto does: the code without its fence or `#|`
-            // lines, unless echo is off, then the output.
-            let echo = option(&cell.options, ctx.options, "echo");
-            let shown = !matches!(echo, Some(Yaml::Bool(false)))
-                && !matches!(echo, Some(Yaml::Str(s)) if s == "false");
-            let code = cell.code.join("\n");
-            if shown && !code.trim().is_empty() {
-                let body = cell.end - cell.start - 1;
-                let first = cell.start + 1 + body.saturating_sub(cell.code.len());
-                let fence = verbatim_fence(&code);
-                out.push(&format!("{fence}{}", cell.language), None, span);
-                for (n, line) in cell.code.iter().enumerate() {
-                    out.push(line, Some(first + n), span);
-                }
-                out.push(&fence, None, span);
-            }
-            let html = output.html.replace("\r\n", " ").replace('\n', " ");
-            let block = if output.stale {
-                format!(
-                    "<div class=\"lp-cell-output lp-cell-output-stale\" title=\"{}\">{html}</div>",
-                    crate::page::escape(&ctx.strings.output_stale)
-                )
-            } else {
-                format!("<div class=\"lp-cell-output\">{html}</div>")
-            };
-            out.block(&block, span);
-        }
-        None => {
-            let text = lines[cell.start..=cell.end].join("\n");
-            let fence = verbatim_fence(&text);
-            out.push(&fence, None, span);
-            out.push(&text, Some(cell.start), span);
-            out.push(&fence, None, span);
-        }
+    let opt = |key: &str| option(&cell.options, ctx.options, key);
+    if is_off(opt("include")) {
+        return;
     }
+    let echo = !is_off(opt("echo"));
+    let show_output = !is_off(opt("output")) && !is_off(opt("eval"));
+    if echo {
+        show_code(cell, ctx, out);
+    }
+    let Some(output) = output.filter(|_| show_output) else {
+        return;
+    };
+    let html = output.html.replace("\r\n", " ").replace('\n', " ");
+    let block = if output.stale {
+        format!(
+            "<div class=\"cell-output cell-output-stale lp-cell-output lp-cell-output-stale\" title=\"{}\">{html}</div>",
+            crate::page::escape(&ctx.strings.output_stale)
+        )
+    } else {
+        format!("<div class=\"cell-output lp-cell-output\">{html}</div>")
+    };
+    out.block(&block, span);
 }
 
 #[cfg(test)]
@@ -207,11 +267,77 @@ mod tests {
     use crate::quarto::{draft, Extras};
 
     #[test]
-    fn a_cell_without_output_is_shown_verbatim_in_a_fence_that_cannot_close_early() {
+    fn a_cell_without_output_is_shown_as_plain_source() {
+        let d = compose("```{r label=a}\n#| fig-cap: Hi\nshown_one()\n```\n");
+        assert_eq!(d.markdown, "```r\nshown_one()\n```\n");
+        assert_eq!(d.line_map[1], Some(3), "the code keeps its source line");
+        assert_eq!(d.line_map[0], None);
+        // Backticks inside the code still cannot close the fence early.
+        let d = compose("```{r}\ncat(\"```\")\n```\n").markdown;
+        assert!(d.starts_with("~~~r\n"), "{d}");
+        // `echo: false` shows nothing.
         let d = compose("```{r,echo=FALSE}\nhidden_one()\n```\n").markdown;
-        assert!(d.contains("hidden_one"));
-        assert!(d.contains("```{r,echo=FALSE}"));
-        assert!(d.starts_with("~~~\n"), "{d}");
+        assert!(!d.contains("hidden_one"), "{d}");
+        let d = compose("---\nexecute:\n  echo: false\n---\n\n```{r}\nhidden_two()\n```\n").markdown;
+        assert!(!d.contains("hidden_two"), "{d}");
+        let d = compose("---\nexecute:\n  echo: false\n---\n\n```{r}\n#| echo: true\nback_again()\n```\n").markdown;
+        assert!(d.contains("back_again()"), "{d}");
+    }
+
+    #[test]
+    fn a_filename_goes_above_the_code() {
+        for fence in ["```{r}\n#| filename: analysis.R\n", "```{r filename=analysis.R}\n"] {
+            let d = compose(&format!("{fence}x()\n```\n")).markdown;
+            assert_eq!(
+                d,
+                "\n<div class=\"code-filename\">analysis.R</div>\n\n```r\nx()\n```\n",
+                "{fence}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_fold_wraps_the_code_in_details() {
+        let d = compose("```{r}\n#| code-fold: true\nx()\n```\n").markdown;
+        assert!(d.contains("<details class=\"code-fold\"><summary>Code</summary>"), "{d}");
+        assert!(d.find("<details").unwrap() < d.find("```r").unwrap());
+        assert!(d.find("```r").unwrap() < d.find("</details>").unwrap());
+        let d = compose("```{r}\n#| code-fold: show\n#| code-summary: \"The <code>\"\n#| filename: a.R\nx()\n```\n").markdown;
+        assert!(
+            d.contains("<details class=\"code-fold\" open><summary>The &lt;code&gt;</summary>"),
+            "{d}"
+        );
+        assert!(d.find("code-filename").unwrap() > d.find("<summary>").unwrap());
+        // Document defaults: top level and `format: html:`.
+        let d = compose("---\ncode-fold: true\ncode-summary: Show\n---\n\n```{r}\nx()\n```\n").markdown;
+        assert!(d.contains("<summary>Show</summary>"), "{d}");
+        let d = compose("---\nformat:\n  html:\n    code-fold: show\n---\n\n```{r}\nx()\n```\n").markdown;
+        assert!(d.contains("<details class=\"code-fold\" open>"), "{d}");
+        let d = compose("---\ncode-fold: true\n---\n\n```{r}\n#| code-fold: false\nx()\n```\n").markdown;
+        assert!(!d.contains("<details"), "{d}");
+        // Every generated line belongs to the cell.
+        let d = compose("```{r}\n#| code-fold: true\nx()\n```\n");
+        assert!(d.origin.iter().all(|o| *o == (1, 4) || *o == (3, 3)), "{:?}", d.origin);
+    }
+
+    #[test]
+    fn include_output_and_eval_options() {
+        let source = |opt: &str| format!("```{{r}}\n#| {opt}\nshown_code()\n```\n");
+        let run = |opt: &str| {
+            with_outputs(&source(opt), r#"{"outputs":[{"line":1,"html":"<p>OUT</p>"}]}"#).markdown
+        };
+        let d = run("include: false");
+        assert!(!d.contains("shown_code") && !d.contains("OUT"), "{d}");
+        assert_eq!(compose(&source("include: false")).markdown, "");
+        let d = run("output: false");
+        assert!(d.contains("shown_code") && !d.contains("OUT"), "{d}");
+        let d = run("eval: false");
+        assert!(d.contains("shown_code") && !d.contains("OUT"), "{d}");
+        let d = run("echo: false");
+        assert!(!d.contains("shown_code") && d.contains("OUT"), "{d}");
+        let d = run("code-fold: true");
+        assert!(d.contains("<details") && d.contains("OUT"), "{d}");
+        assert!(d.find("</details>").unwrap() < d.find("OUT").unwrap());
     }
 
     #[test]
@@ -228,7 +354,7 @@ mod tests {
             "no option lines when output is shown"
         );
         let position = |text: &str| lines.iter().position(|l| *l == text).unwrap();
-        let one = position("<div class=\"lp-cell-output\"><p>ONE</p></div>");
+        let one = position("<div class=\"cell-output lp-cell-output\"><p>ONE</p></div>");
         assert_eq!(
             (lines[one - 1], lines[one + 1]),
             ("", ""),
@@ -240,22 +366,23 @@ mod tests {
         assert_eq!(d.line_map[position("a <- 1")], Some(7));
         assert_eq!(d.line_map[position("```r")], None);
         assert!(d.markdown.contains(
-            "<div class=\"lp-cell-output lp-cell-output-stale\" title=\"Old &lt;one&gt;\"><p>TWO lines</p></div>"
+            "<div class=\"cell-output cell-output-stale lp-cell-output lp-cell-output-stale\" title=\"Old &lt;one&gt;\"><p>TWO lines</p></div>"
         ));
         assert_eq!(d.origin[one], (5, 8), "the output belongs to its cell");
     }
 
     #[test]
-    fn a_hidden_cell_gets_no_output_and_stays_verbatim() {
+    fn a_hidden_cell_gets_no_output_and_is_not_shown() {
         let d = with_outputs(
             RESULTS,
             r#"{"outputs":[{"line":17,"html":"<p>HIDDEN</p>"}]}"#,
         );
         assert!(!d.markdown.contains("HIDDEN"));
-        assert!(d.markdown.contains("#| label: hidden"));
-        let bare = compose(RESULTS);
-        assert!(bare.markdown.contains("#| label: first"));
-        assert!(bare.markdown.contains("{r}"));
+        assert!(!d.markdown.contains("c <- 3"));
+        let bare = compose(RESULTS).markdown;
+        assert!(bare.contains("a <- 1") && bare.contains("b <- 2"));
+        assert!(!bare.contains("c <- 3") && !bare.contains("#|") && !bare.contains("{r}"));
+        assert!(bare.contains("```r\n"));
     }
 
     #[test]
