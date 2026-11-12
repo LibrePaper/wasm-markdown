@@ -230,8 +230,8 @@ dependencies = [
 
 [[package]]
 name = "wasm-helpers"
-version = "0.1.0"
-source = "git+https://github.com/LibrePaper/wasm-helpers?tag=v0.1.1#29aeedcca6f8b407bab06952c6ea939e02a1b334"
+version = "0.2.0"
+source = "git+https://github.com/LibrePaper/wasm-helpers?tag=v0.2.0#312654a43fcf8efeb08fcc77ef95ac671c39391d"
 
 [[package]]
 name = "wasm-markdown"
