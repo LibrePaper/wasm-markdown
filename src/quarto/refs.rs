@@ -799,8 +799,14 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
         Some(y) if y.truthy() => y.text(),
         _ => "Contents".to_string(),
     };
+    // Headings a div consumes (callout titles, tab headings) are not sections.
+    let consumed: HashSet<usize> = parsed
+        .divs
+        .iter()
+        .flat_map(|d| divs::consumed_headings(d, lines))
+        .collect();
     let headings: Vec<(usize, HeadingLine)> = (0..lines.len())
-        .filter(|&i| live[i] && !refs.skip.contains(&i))
+        .filter(|&i| live[i] && !refs.skip.contains(&i) && !consumed.contains(&i))
         .filter_map(|i| parse_heading(lines[i]).map(|h| (i, h)))
         .collect();
     let base = headings.iter().map(|(_, h)| h.level).min().unwrap_or(1);
@@ -1380,6 +1386,17 @@ mod tests {
         let html = crate::markdown::render_body(&d);
         assert_has(&html, "id=\"intro\"");
         assert_has(&html, "id=\"sec-intro\"");
+    }
+
+    #[test]
+    fn callout_titles_and_tabs_are_not_sections() {
+        let source = "---\ntitle: T\ntoc: true\nnumber-sections: true\n---\n\n# One\n\n::: {.callout-note}\n## Note title\nBody.\n:::\n\n::: {.panel-tabset}\n## R\nr\n## Py\npy\n:::\n\n# Two\n";
+        let d = compose(source).markdown;
+        assert!(
+            !d.contains("Note title</a>") && !d.contains(">R</a>"),
+            "{d}"
+        );
+        assert_has(&d, "data-number=\"2\"></span>Two");
     }
 
     #[test]
