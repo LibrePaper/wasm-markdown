@@ -382,6 +382,24 @@ pub(crate) fn close(div: &Div, _ctx: &mut Context) -> Option<String> {
     )
 }
 
+/// The heading lines a div turns into something else: the heading that titles
+/// a callout and the headings that start tabs. They are not sections, so
+/// they get no number and no entry in the contents.
+pub(crate) fn consumed_headings(div: &Div, lines: &[&str]) -> Vec<usize> {
+    if callout_kind(div).is_some() {
+        if get(&div.attrs, "title").is_none() {
+            if let Some(h) = leading_heading(div, lines) {
+                return vec![h.0];
+            }
+        }
+        return Vec::new();
+    }
+    if is_tabset(div) {
+        return tab_headings(div, lines).into_iter().map(|t| t.0).collect();
+    }
+    Vec::new()
+}
+
 /// Replaces a content line of `div` (the innermost open div), or none to
 /// leave it as ordinary content: the heading that titles a callout becomes
 /// nothing (an empty string), and a tab heading starts a tab.
