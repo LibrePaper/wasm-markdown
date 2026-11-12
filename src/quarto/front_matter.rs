@@ -100,8 +100,21 @@ fn unescape_double(inner: &str) -> String {
     out
 }
 
+/// A value without its trailing YAML comment (` # …`), unless the value is
+/// quoted: `false # hide this cell` is `false`, `"a # b"` stays as written.
+fn without_comment(value: &str) -> &str {
+    let t = value.trim_start();
+    if t.starts_with('"') || t.starts_with('\'') {
+        return value;
+    }
+    match value.find(" #").or_else(|| value.find("\t#")) {
+        Some(at) => &value[..at],
+        None => value,
+    }
+}
+
 pub(crate) fn scalar(value: &str) -> Yaml {
-    let t = value.trim();
+    let t = without_comment(value).trim();
     if t.is_empty() {
         return Yaml::Str(String::new());
     }
@@ -791,5 +804,19 @@ mod tests {
         assert!(d.contains("<p class=\"subtitle\">S</p>"));
         let d = compose("---\nkeywords:\n  - x\n  - y\n---\n").markdown;
         assert!(d.contains("</span> x, y</p>"), "{d}");
+    }
+}
+
+#[cfg(test)]
+mod comment_tests {
+    use super::*;
+
+    #[test]
+    fn trailing_comments_are_not_part_of_values() {
+        assert_eq!(scalar("false # hide this cell"), Yaml::Bool(false));
+        assert_eq!(scalar("3 # three"), scalar("3"));
+        assert_eq!(scalar("\"a # b\""), scalar("\"a # b\""));
+        assert!(matches!(scalar("\"a # b\""), Yaml::Str(ref s) if s.contains('#')));
+        assert!(matches!(scalar("C#"), Yaml::Str(ref s) if s == "C#"));
     }
 }

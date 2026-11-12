@@ -1361,9 +1361,12 @@ pub(crate) fn line(i: usize, lines: &[&str], ctx: &mut Context, out: &mut Out) -
 /// tables, captions and theorems are Pandoc-native as written.
 fn pandoc_line(i: usize, lines: &[&str], ctx: &mut Context, out: &mut Out) -> Option<usize> {
     let span = ctx.refs.items.get(&i)?;
-    if !matches!(span.item, Item::Equation { .. }) {
+    let Item::Equation { id, .. } = &span.item else {
         return None;
-    }
+    };
+    // The identifier moves to a fenced div around the math, which Pandoc
+    // keeps as the target of `[Equation 1](#eq-x)`.
+    out.push(&format!("::: {{#{id}}}"), None, (i, span.end));
     for (l, &line) in lines.iter().enumerate().take(span.end + 1).skip(i) {
         let from = if l == i {
             line.find("$$").map_or(0, |k| k + 2)
@@ -1379,6 +1382,7 @@ fn pandoc_line(i: usize, lines: &[&str], ctx: &mut Context, out: &mut Out) -> Op
         };
         out.push(text, Some(l), (l, l));
     }
+    out.push(":::", None, (i, span.end));
     Some(span.end + 1 - i)
 }
 
@@ -1391,6 +1395,20 @@ mod tests {
             draft.contains(expected),
             "missing {expected:?} in:\n{draft}"
         );
+    }
+
+    #[test]
+    fn a_pandoc_equation_keeps_its_target_in_a_fenced_div() {
+        let d = crate::quarto::draft(
+            "$$ x $$ {#eq-x}\n\nSee @eq-x.\n",
+            "main.qmd",
+            &|_: &str| None,
+            &crate::quarto::Extras::default(),
+            true,
+        )
+        .markdown;
+        assert_has(&d, "::: {#eq-x}\n$$ x $$\n:::");
+        assert_has(&d, "[Equation 1](#eq-x)");
     }
 
     #[test]
@@ -1700,8 +1718,11 @@ mod tests {
         ] {
             assert_has(&d, kept);
         }
-        assert!(!d.contains("{#eq-"), "{d}");
-        assert_eq!(d.matches("\n:::\n").count(), 2, "{d}");
+        // The attribute text is gone; each equation's id is on a fenced div.
+        assert!(!d.contains("$$ {#eq-"), "{d}");
+        let equations = d.matches("::: {#eq-").count();
+        assert_eq!(equations, 2, "{d}");
+        assert_eq!(d.matches("\n:::\n").count(), 2 + equations, "{d}");
     }
 
     #[test]
