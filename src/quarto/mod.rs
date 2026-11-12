@@ -92,6 +92,9 @@ pub(crate) struct Context<'a> {
     pub files: &'a dyn Fn(&str) -> Option<String>,
     /// The interface strings the draft prints.
     pub strings: &'a Strings,
+    /// Whether this is the draft Pandoc reads for a PDF: raw content for
+    /// other formats is kept as written there instead of dropped.
+    pub for_pandoc: bool,
     /// Warnings found while writing the draft.
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -514,6 +517,7 @@ pub fn draft(
         refs: &references,
         files,
         strings: &extras.strings,
+        for_pandoc,
         diagnostics: Vec::new(),
     };
     let mut out = Out::default();

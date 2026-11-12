@@ -112,10 +112,7 @@ pub fn render_with(source: &str, title: &str, assets: Resolve) -> String {
 
 /// The same for a Quarto draft, with the Quarto options.
 fn render_quarto_with(source: &str, title: &str, assets: Resolve) -> String {
-    let body = rewrite_images(
-        &comrak::markdown_to_html(source, &quarto_options()),
-        assets,
-    );
+    let body = rewrite_images(&comrak::markdown_to_html(source, &quarto_options()), assets);
     page::page(title, "", &body)
 }
 
@@ -312,7 +309,14 @@ mod tests {
             "H~2~O, x^2^, ~~struck~~ and a note^[inline].\n\nTerm\n: Meaning\n",
             &quarto_options(),
         );
-        for wanted in ["H<sub>2</sub>O", "x<sup>2</sup>", "<del>struck</del>", "footnote-ref", "<dl>", "<dt>Term</dt>"] {
+        for wanted in [
+            "H<sub>2</sub>O",
+            "x<sup>2</sup>",
+            "<del>struck</del>",
+            "footnote-ref",
+            "<dl>",
+            "<dt>Term</dt>",
+        ] {
             assert!(html.contains(wanted), "{wanted} missing in {html}");
         }
     }

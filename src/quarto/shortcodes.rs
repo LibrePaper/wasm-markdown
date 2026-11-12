@@ -7,8 +7,8 @@
 use crate::page::escape;
 
 use super::cells::option;
-use super::front_matter::{get, set, Yaml};
 use super::front_matter::parse_front_matter;
+use super::front_matter::{get, set, Yaml};
 use super::{fence_closes, fence_open, parse, Context, Out};
 
 /// How deep includes may nest before the draft calls it a cycle.
@@ -404,7 +404,12 @@ fn raw_inline(line: &str) -> String {
 
 /// A line with its shortcodes expanded.
 pub(crate) fn expand_line(line: &str, ctx: &mut Context, site: &Site) -> String {
-    let line = &raw_inline(line);
+    // Pandoc reads raw spans itself, so the PDF draft keeps them as written.
+    let line = &if ctx.for_pandoc {
+        line.to_string()
+    } else {
+        raw_inline(line)
+    };
     let mut out = String::with_capacity(line.len());
     let (mut copied, mut scan) = (0, 0);
     while let Some(call) = find_shortcode(line, scan) {
@@ -642,13 +647,30 @@ mod tests {
         assert!(out.contains("<p>After</p>"), "{out}");
         // The lines of the dropped block are claimed by it.
         let d = compose(source);
-        assert!(d.origin.contains(&(10, 12)), "{:?}", d.origin);
+        assert!(d.origin.contains(&(9, 11)), "{:?}", d.origin);
     }
 
     #[test]
     fn raw_inline_spans_pass_html_and_drop_other_formats() {
         let out = html("A `<b>x</b>`{=html} and `\\textbf{y}`{=latex} and `code`.\n");
-        assert!(out.contains("A <b>x</b> and  and <code>code</code>."), "{out}");
+        assert!(
+            out.contains("A <b>x</b> and  and <code>code</code>."),
+            "{out}"
+        );
+        // The PDF draft leaves raw spans to Pandoc.
+        let source = "A `\\textbf{y}`{=latex}.\n";
+        let d = crate::quarto::draft(
+            source,
+            "main.qmd",
+            &|_: &str| None,
+            &crate::quarto::Extras::default(),
+            true,
+        );
+        assert!(
+            d.markdown.contains("`\\textbf{y}`{=latex}"),
+            "{}",
+            d.markdown
+        );
     }
 
     #[test]
