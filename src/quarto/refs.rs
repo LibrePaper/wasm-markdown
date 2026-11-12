@@ -192,6 +192,11 @@ impl Refs {
         })
     }
 
+    /// Whether `id` is a numbered target of the document.
+    pub(crate) fn has_target(&self, id: &str) -> bool {
+        self.targets.contains_key(id)
+    }
+
     /// `Figure 1.` or `(a)`: what a caption starts with.
     pub(crate) fn caption_label(&self, id: &str) -> String {
         if let Some(letter) = self.letters.get(id) {

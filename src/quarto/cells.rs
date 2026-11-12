@@ -246,13 +246,30 @@ pub(crate) fn display(
     }
     let echo = !is_off(opt("echo"));
     let show_output = !is_off(opt("output")) && !is_off(opt("eval"));
+    let output = output.filter(|_| show_output);
+    let html = output.map(|o| {
+        let html = super::outputs::normalize(&o.html, cell, ctx);
+        (o, html.replace("\r\n", " ").replace('\n', " "))
+    });
+    // A labelled cell has exactly one element with its id: the saved float
+    // when it carries it, an empty anchor before the code otherwise.
+    if !cell.label.is_empty() && ctx.refs.has_target(&cell.label) {
+        let carried = html
+            .as_ref()
+            .is_some_and(|(_, h)| h.contains(&format!("id=\"{}\"", crate::page::escape(&cell.label))));
+        if !carried {
+            out.block(
+                &format!("<span id=\"{}\"></span>", crate::page::escape(&cell.label)),
+                span,
+            );
+        }
+    }
     if echo {
         show_code(cell, ctx, out);
     }
-    let Some(output) = output.filter(|_| show_output) else {
+    let Some((output, html)) = html else {
         return;
     };
-    let html = output.html.replace("\r\n", " ").replace('\n', " ");
     let block = if output.stale {
         format!(
             "<div class=\"cell-output cell-output-stale lp-cell-output lp-cell-output-stale\" title=\"{}\">{html}</div>",

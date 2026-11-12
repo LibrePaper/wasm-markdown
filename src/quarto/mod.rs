@@ -43,6 +43,7 @@ mod attrs;
 mod cells;
 mod divs;
 mod front_matter;
+mod outputs;
 mod refs;
 mod shortcodes;
 
