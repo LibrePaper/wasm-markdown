@@ -7,8 +7,8 @@
 use crate::page::escape;
 
 use super::cells::option;
-use super::{fence_closes, fence_open, parse, Context};
 use super::front_matter::{get, set, Yaml};
+use super::{fence_closes, fence_open, parse, Context};
 
 /// How deep includes may nest before the draft calls it a cycle.
 const MAX_INCLUDE_DEPTH: usize = 8;
@@ -60,7 +60,12 @@ fn find_shortcode(s: &str, from: usize) -> Option<Call<'_>> {
         }
         let after_at = name_at + len;
         if let Some(g) = s[after_at..].find(">}}") {
-            return Some(Call { start, end: after_at + g + 3, name: &s[name_at..after_at], args: &s[after_at..after_at + g] });
+            return Some(Call {
+                start,
+                end: after_at + g + 3,
+                name: &s[name_at..after_at],
+                args: &s[after_at..after_at + g],
+            });
         }
     }
     None
@@ -132,8 +137,15 @@ pub(crate) fn expand_line(line: &str, ctx: &mut Context, site: &Site) -> String 
 fn resolve(ctx: &Context, name: &str, source_name: &str) -> Option<(String, String)> {
     let requested = name.replace('\\', "/");
     let drive = requested.as_bytes().get(1) == Some(&b':')
-        && requested.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic());
-    if requested.is_empty() || requested.starts_with('/') || drive || requested.split('/').any(str::is_empty) {
+        && requested
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_alphabetic());
+    if requested.is_empty()
+        || requested.starts_with('/')
+        || drive
+        || requested.split('/').any(str::is_empty)
+    {
         return None;
     }
     let mut parts: Vec<&str> = source_name.split('/').collect();
@@ -155,15 +167,36 @@ fn resolve(ctx: &Context, name: &str, source_name: &str) -> Option<(String, Stri
 }
 
 fn include(ctx: &mut Context, name: &str, site: &Site) -> String {
-    let Site { depth, seen, source_name, line } = *site;
+    let Site {
+        depth,
+        seen,
+        source_name,
+        line,
+    } = *site;
     let Some((normalized, text)) = resolve(ctx, name, source_name) else {
-        ctx.report("quarto_include_unauthorized", format!("name={name}"), source_name, line);
-        let message = ctx.strings.include_unavailable.replace("{name}", &escape(name));
+        ctx.report(
+            "quarto_include_unauthorized",
+            format!("name={name}"),
+            source_name,
+            line,
+        );
+        let message = ctx
+            .strings
+            .include_unavailable
+            .replace("{name}", &escape(name));
         return format!("<span class=\"quarto-diagnostic\">{message}</span>");
     };
     if depth >= MAX_INCLUDE_DEPTH || seen.contains(&normalized) {
-        ctx.report("quarto_include_cycle", format!("normalized={normalized}"), source_name, line);
-        let message = ctx.strings.include_cycle.replace("{normalized}", &escape(&normalized));
+        ctx.report(
+            "quarto_include_cycle",
+            format!("normalized={normalized}"),
+            source_name,
+            line,
+        );
+        let message = ctx
+            .strings
+            .include_cycle
+            .replace("{normalized}", &escape(&normalized));
         return format!("<span class=\"quarto-diagnostic\">{message}</span>");
     }
     let mut next = seen.to_vec();
@@ -204,7 +237,12 @@ fn include(ctx: &mut Context, name: &str, site: &Site) -> String {
         if let Some((ch, len, _)) = fence_open(line) {
             fence = Some((ch, len));
         }
-        let inner = Site { depth: depth + 1, seen: &next, source_name: &normalized, line: 0 };
+        let inner = Site {
+            depth: depth + 1,
+            seen: &next,
+            source_name: &normalized,
+            line: 0,
+        };
         out.push(expand_line(line, ctx, &inner));
     }
     out.join("\n")
@@ -228,7 +266,10 @@ mod tests {
         let d = with_files(
             "Before {{< include outer.qmd >}} after.",
             &[
-                ("outer.qmd", "Outer {{< include inner.qmd >}}\n\n```{r}\n{{< include secret.qmd >}}\n```"),
+                (
+                    "outer.qmd",
+                    "Outer {{< include inner.qmd >}}\n\n```{r}\n{{< include secret.qmd >}}\n```",
+                ),
                 ("inner.qmd", "Inner text"),
                 ("secret.qmd", "SECRET"),
             ],
@@ -242,15 +283,34 @@ mod tests {
 
     #[test]
     fn include_cycles_and_unavailable_files_are_reported() {
-        let d = with_files("{{< include a.qmd >}}", &[("a.qmd", "A {{< include b.qmd >}}"), ("b.qmd", "B {{< include a.qmd >}}")]);
-        assert!(d.markdown.contains("Include cycle at a.qmd"), "{}", d.markdown);
-        let cycle = d.diagnostics.iter().find(|x| x.message == "quarto_include_cycle").unwrap();
+        let d = with_files(
+            "{{< include a.qmd >}}",
+            &[
+                ("a.qmd", "A {{< include b.qmd >}}"),
+                ("b.qmd", "B {{< include a.qmd >}}"),
+            ],
+        );
+        assert!(
+            d.markdown.contains("Include cycle at a.qmd"),
+            "{}",
+            d.markdown
+        );
+        let cycle = d
+            .diagnostics
+            .iter()
+            .find(|x| x.message == "quarto_include_cycle")
+            .unwrap();
         assert_eq!(cycle.hints, vec!["normalized=a.qmd".to_string()]);
         assert_eq!(cycle.file, "b.qmd");
 
-        let d = with_files("{{< include ../secret.qmd >}}", &[("../secret.qmd", "must never appear"), ("safe.qmd", "safe")]);
+        let d = with_files(
+            "{{< include ../secret.qmd >}}",
+            &[("../secret.qmd", "must never appear"), ("safe.qmd", "safe")],
+        );
         assert!(!d.markdown.contains("must never appear"));
-        assert!(d.markdown.contains("Include ../secret.qmd is not available"));
+        assert!(d
+            .markdown
+            .contains("Include ../secret.qmd is not available"));
         let unauthorized = &d.diagnostics[0];
         assert_eq!(unauthorized.message, "quarto_include_unauthorized");
         assert_eq!(unauthorized.hints, vec!["name=../secret.qmd".to_string()]);
@@ -261,7 +321,10 @@ mod tests {
     fn an_included_hidden_cell_is_dropped() {
         let d = with_files(
             "{{< include hidden.qmd >}}",
-            &[("hidden.qmd", "```{r}\n#| include: false\nsecret_hidden_code()\n```\nVisible prose")],
+            &[(
+                "hidden.qmd",
+                "```{r}\n#| include: false\nsecret_hidden_code()\n```\nVisible prose",
+            )],
         );
         assert!(!d.markdown.contains("secret_hidden_code"));
         assert!(d.markdown.contains("Visible prose"));
@@ -270,7 +333,13 @@ mod tests {
     #[test]
     fn includes_resolve_relative_to_the_including_file() {
         let read = |p: &str| (p == "chap/part.qmd").then(|| "Part".to_string());
-        let d = draft("{{< include chap/part.qmd >}}", "main.qmd", &read, &Extras::default(), false);
+        let d = draft(
+            "{{< include chap/part.qmd >}}",
+            "main.qmd",
+            &read,
+            &Extras::default(),
+            false,
+        );
         assert_eq!(d.markdown, "Part");
     }
 }

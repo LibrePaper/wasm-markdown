@@ -99,8 +99,13 @@ pub(crate) struct Context<'a> {
 impl Context<'_> {
     /// Adds a warning about `line` (1-based; 0 for none) of `source_name`.
     pub(crate) fn report(&mut self, key: &str, hint: String, source_name: &str, line: usize) {
-        let file = if source_name == self.path { "" } else { source_name };
-        self.diagnostics.push(warning(key, vec![hint], file, line, usize::from(line > 0)));
+        let file = if source_name == self.path {
+            ""
+        } else {
+            source_name
+        };
+        self.diagnostics
+            .push(warning(key, vec![hint], file, line, usize::from(line > 0)));
     }
 }
 
@@ -163,7 +168,12 @@ pub(crate) fn parse(lines: &[&str]) -> Parsed {
             if info.starts_with('{') && starts_with_language(inner) {
                 let stripped = info.strip_prefix('{').unwrap_or(info);
                 let stripped = stripped.strip_suffix('}').unwrap_or(stripped);
-                fence = Some(OpenFence { ch, len, info: stripped.to_string(), start: i });
+                fence = Some(OpenFence {
+                    ch,
+                    len,
+                    info: stripped.to_string(),
+                    start: i,
+                });
                 i += 1;
                 continue;
             }
@@ -189,11 +199,23 @@ pub(crate) fn parse(lines: &[&str]) -> Parsed {
         i += 1;
     }
     if let Some(open) = &fence {
-        diagnostics.push(warning("quarto_cell_unfinished", vec![], "", open.start + 1, 1));
+        diagnostics.push(warning(
+            "quarto_cell_unfinished",
+            vec![],
+            "",
+            open.start + 1,
+            1,
+        ));
     }
     divs::finish_unclosed(&mut divs, &stack, lines.len());
     if let Some(&top) = stack.last() {
-        diagnostics.push(warning("quarto_div_unfinished", vec![], "", divs[top].start + 1, 1));
+        diagnostics.push(warning(
+            "quarto_div_unfinished",
+            vec![],
+            "",
+            divs[top].start + 1,
+            1,
+        ));
     }
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for cell in cells.iter().filter(|c| !c.label.is_empty()) {
@@ -210,7 +232,13 @@ pub(crate) fn parse(lines: &[&str]) -> Parsed {
             ));
         }
     }
-    Parsed { fm, cells, divs, headings, diagnostics }
+    Parsed {
+        fm,
+        cells,
+        divs,
+        headings,
+        diagnostics,
+    }
 }
 
 /// The end of a link or image starting at `i`, if one does.
@@ -246,7 +274,10 @@ fn prose(line: &str, ctx: &mut Context) -> String {
         };
         match end {
             Some(e) => {
-                out.push_str(&divs::spans(&refs::crossrefs(&line[text_start..i], refs), ctx));
+                out.push_str(&divs::spans(
+                    &refs::crossrefs(&line[text_start..i], refs),
+                    ctx,
+                ));
                 out.push_str(&line[i..e]);
                 i = e;
                 text_start = e;
@@ -254,7 +285,10 @@ fn prose(line: &str, ctx: &mut Context) -> String {
             None => i += 1,
         }
     }
-    out.push_str(&divs::spans(&refs::crossrefs(&line[text_start..], refs), ctx));
+    out.push_str(&divs::spans(
+        &refs::crossrefs(&line[text_start..], refs),
+        ctx,
+    ));
     out
 }
 
@@ -335,7 +369,10 @@ impl Extras {
                 }
             };
             read("output_stale", &mut extras.strings.output_stale);
-            read("include_unavailable", &mut extras.strings.include_unavailable);
+            read(
+                "include_unavailable",
+                &mut extras.strings.include_unavailable,
+            );
             read("include_cycle", &mut extras.strings.include_cycle);
             read("abstract", &mut extras.strings.abstract_label);
         }
@@ -438,7 +475,13 @@ fn div_html(div: &Div, ctx: &mut Context, opening: bool) -> Option<String> {
     } else {
         None
     };
-    labelled.or_else(|| if opening { divs::open(div, ctx) } else { divs::close(div, ctx) })
+    labelled.or_else(|| {
+        if opening {
+            divs::open(div, ctx)
+        } else {
+            divs::close(div, ctx)
+        }
+    })
 }
 
 /// Composes the draft of a Quarto source.
@@ -477,9 +520,18 @@ pub fn draft(
 
     let cell_at: HashMap<usize, &Cell> = parsed.cells.iter().map(|c| (c.start, c)).collect();
     // The divs by the line of their opening and of their closing fence.
-    let div_opens: HashMap<usize, usize> = parsed.divs.iter().enumerate().map(|(n, d)| (d.start, n)).collect();
-    let div_closes: HashMap<usize, usize> =
-        parsed.divs.iter().enumerate().filter_map(|(n, d)| d.end.map(|end| (end, n))).collect();
+    let div_opens: HashMap<usize, usize> = parsed
+        .divs
+        .iter()
+        .enumerate()
+        .map(|(n, d)| (d.start, n))
+        .collect();
+    let div_closes: HashMap<usize, usize> = parsed
+        .divs
+        .iter()
+        .enumerate()
+        .filter_map(|(n, d)| d.end.map(|end| (end, n)))
+        .collect();
     let last_line = lines.len() - 1;
     // Outputs belong to cells Quarto executes, matched by the opening line.
     let mut outputs: HashMap<usize, &Output> = HashMap::new();
@@ -561,7 +613,12 @@ pub fn draft(
                 out.push(line, Some(i), (i, i));
                 out.push(&fence, None, (i, i));
             } else {
-                let site = Site { depth: 0, seen: &[], source_name: path, line: i + 1 };
+                let site = Site {
+                    depth: 0,
+                    seen: &[],
+                    source_name: path,
+                    line: i + 1,
+                };
                 let mut expanded = shortcodes::expand_line(line, &mut ctx, &site);
                 if refs::is_heading(&expanded) {
                     if let Some(decorated) = refs::decorate_heading(&expanded, &mut ctx) {
@@ -574,7 +631,13 @@ pub fn draft(
             i += 1;
             continue;
         };
-        cells::display(cell, outputs.get(&cell.start).copied(), &lines, &mut ctx, &mut out);
+        cells::display(
+            cell,
+            outputs.get(&cell.start).copied(),
+            &lines,
+            &mut ctx,
+            &mut out,
+        );
         i = cell.end + 1;
     }
     // A div that is never closed is closed at the end of the file.
@@ -608,13 +671,22 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn with_files(source: &str, files: &[(&str, &str)]) -> Draft {
-        let table: Vec<(String, String)> = files.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let table: Vec<(String, String)> = files
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
         let read = move |p: &str| table.iter().find(|(k, _)| k == p).map(|(_, v)| v.clone());
         draft(source, "main.qmd", &read, &Extras::default(), false)
     }
 
     pub(crate) fn with_outputs(source: &str, json: &str) -> Draft {
-        draft(source, "paper.qmd", &no_files, &Extras::from_json(json), false)
+        draft(
+            source,
+            "paper.qmd",
+            &no_files,
+            &Extras::from_json(json),
+            false,
+        )
     }
 
     // Lines: the first cell opens on 5, the second on 12, the hidden one on 17.
@@ -638,7 +710,10 @@ pub(crate) mod tests {
     fn opaque_fences_are_not_cells_and_not_rewritten() {
         let d = compose("````\n```{r}\nplot(@fig-x)\n```\n````\n").markdown;
         assert_eq!(d, "````\n```{r}\nplot(@fig-x)\n```\n````\n");
-        let d = with_files("```text\n{{< include hidden.qmd >}}\n```\n", &[("hidden.qmd", "DO NOT INSERT")]);
+        let d = with_files(
+            "```text\n{{< include hidden.qmd >}}\n```\n",
+            &[("hidden.qmd", "DO NOT INSERT")],
+        );
         assert!(d.markdown.contains("{{< include hidden.qmd >}}"));
         assert!(!d.markdown.contains("DO NOT INSERT"));
     }
@@ -647,7 +722,14 @@ pub(crate) mod tests {
     fn cell_and_div_diagnostics() {
         let d = compose("```{r #a}\n1\n```\n\n```{r #a}\n2\n```\n\n```{r}\nopen\n");
         let keys: Vec<&str> = d.diagnostics.iter().map(|x| x.message.as_str()).collect();
-        assert_eq!(keys, ["quarto_cell_unfinished", "quarto_cell_label_duplicate", "quarto_cell_label_duplicate"]);
+        assert_eq!(
+            keys,
+            [
+                "quarto_cell_unfinished",
+                "quarto_cell_label_duplicate",
+                "quarto_cell_label_duplicate"
+            ]
+        );
         assert_eq!(d.diagnostics[1].hints, vec!["label=a".to_string()]);
         let d = compose("::: {.x}\ntext\n");
         assert_eq!(d.diagnostics[0].message, "quarto_div_unfinished");
@@ -660,8 +742,14 @@ pub(crate) mod tests {
         assert!(d.contains("<p class=\"lp-results-note\">Output from &lt;Ada&gt;&#39;s run</p>"));
         assert!(d.find("</header>").unwrap() < d.find("lp-results-note").unwrap());
         let plain = with_outputs("Plain.\n", r#"{"note":"N"}"#).markdown;
-        assert!(plain.starts_with("\n<p class=\"lp-results-note\">N</p>"), "{plain}");
-        assert_eq!(with_outputs(RESULTS, r#"{"note":""}"#).markdown, compose(RESULTS).markdown);
+        assert!(
+            plain.starts_with("\n<p class=\"lp-results-note\">N</p>"),
+            "{plain}"
+        );
+        assert_eq!(
+            with_outputs(RESULTS, r#"{"note":""}"#).markdown,
+            compose(RESULTS).markdown
+        );
     }
 
     #[test]
@@ -673,14 +761,21 @@ pub(crate) mod tests {
         let d = draft(&source, "main.qmd", &read, &extras, true);
         assert!(d.markdown.starts_with(front), "{}", d.markdown);
         assert!(d.markdown.contains("Included words."));
-        assert!(!d.markdown.contains("quarto-title-block") && !d.markdown.contains("lp-results-note"));
-        assert_eq!(&d.line_map[..5], &[Some(1), Some(2), Some(3), Some(4), Some(5)]);
+        assert!(
+            !d.markdown.contains("quarto-title-block") && !d.markdown.contains("lp-results-note")
+        );
+        assert_eq!(
+            &d.line_map[..5],
+            &[Some(1), Some(2), Some(3), Some(4), Some(5)]
+        );
     }
 
     #[test]
     fn extras_tolerate_junk() {
         assert!(Extras::from_json("not json").outputs.is_empty());
-        let e = Extras::from_json(r#"{"outputs":[{"line":"x"},{"line":3,"html":"h"}],"strings":{"abstract":"Résumé"}}"#);
+        let e = Extras::from_json(
+            r#"{"outputs":[{"line":"x"},{"line":3,"html":"h"}],"strings":{"abstract":"Résumé"}}"#,
+        );
         assert_eq!(e.outputs.len(), 1);
         assert_eq!(e.strings.abstract_label, "Résumé");
     }
@@ -690,6 +785,9 @@ pub(crate) mod tests {
         let json = compose("---\ntitle: T\n---\nBody").to_json();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["line_map"], serde_json::json!([null, 4]));
-        assert!(value["markdown"].as_str().unwrap().ends_with("</header>\nBody"));
+        assert!(value["markdown"]
+            .as_str()
+            .unwrap()
+            .ends_with("</header>\nBody"));
     }
 }

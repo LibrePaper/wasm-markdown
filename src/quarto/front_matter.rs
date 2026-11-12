@@ -62,8 +62,6 @@ pub(crate) fn set(map: &mut Map, key: &str, value: Yaml) {
     }
 }
 
-/// The value of an option, looking in the cell first and the defaults second.
-
 fn is_number(t: &str) -> bool {
     let t = t.strip_prefix('-').unwrap_or(t);
     let (whole, fraction) = match t.split_once('.') {
@@ -159,7 +157,14 @@ fn is_array_key(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
     matches!(
         k.as_str(),
-        "author" | "authors" | "keyword" | "keywords" | "bibliography" | "csl" | "filter" | "filters"
+        "author"
+            | "authors"
+            | "keyword"
+            | "keywords"
+            | "bibliography"
+            | "csl"
+            | "filter"
+            | "filters"
     )
 }
 
@@ -178,15 +183,25 @@ fn key_line(line: &str) -> Option<(usize, &str, &str)> {
         return None;
     }
     let colon = t.find(':')?;
-    Some((line.len() - t.len(), t[..colon].trim(), t[colon + 1..].trim_start()))
+    Some((
+        line.len() - t.len(),
+        t[..colon].trim(),
+        t[colon + 1..].trim_start(),
+    ))
 }
 
 /// The small YAML reader for front matter: top-level scalars, one level of
 /// nesting, and lists for the keys that take them. Unknown shapes are warned
 /// about; the source itself is never rewritten.
 pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
-    let none = |diagnostics: Vec<Diagnostic>| FrontMatter { meta: Vec::new(), lines: 0, diagnostics };
-    let first = lines.first().map(|l| l.trim_start_matches('\u{feff}').trim());
+    let none = |diagnostics: Vec<Diagnostic>| FrontMatter {
+        meta: Vec::new(),
+        lines: 0,
+        diagnostics,
+    };
+    let first = lines
+        .first()
+        .map(|l| l.trim_start_matches('\u{feff}').trim());
     if first != Some("---") {
         return none(Vec::new());
     }
@@ -219,7 +234,8 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
                 }
                 _ => None,
             };
-            if let Some(Yaml::List(items)) = top.iter_mut().find(|(k, _)| *k == ak).map(|(_, v)| v) {
+            if let Some(Yaml::List(items)) = top.iter_mut().find(|(k, _)| *k == ak).map(|(_, v)| v)
+            {
                 array_item = entry.as_ref().map(|_| (ak.clone(), items.len()));
                 items.push(entry.unwrap_or_else(|| scalar(item)));
             }
@@ -232,7 +248,11 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
         };
         if indent == 0 {
             current_key = Some(key.to_string());
-            array_key = if rest.is_empty() && is_array_key(key) { Some(key.to_string()) } else { None };
+            array_key = if rest.is_empty() && is_array_key(key) {
+                Some(key.to_string())
+            } else {
+                None
+            };
             array_item = None;
             array_indent = -1;
             let value = if !rest.is_empty() {
@@ -243,8 +263,12 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
                 Yaml::Map(Map::new())
             };
             set(&mut top, key, value);
-        } else if let (Some((list, at)), true) = (array_item.clone(), indent as isize > array_indent) {
-            if let Some(Yaml::List(items)) = top.iter_mut().find(|(k, _)| *k == list).map(|(_, v)| v) {
+        } else if let (Some((list, at)), true) =
+            (array_item.clone(), indent as isize > array_indent)
+        {
+            if let Some(Yaml::List(items)) =
+                top.iter_mut().find(|(k, _)| *k == list).map(|(_, v)| v)
+            {
                 if let Some(Yaml::Map(m)) = items.get_mut(at) {
                     set(m, key, scalar(rest));
                 }
@@ -257,10 +281,20 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
             array_key = None;
             set(m, key, scalar(rest));
         } else {
-            diagnostics.push(warning("quarto_yaml_nesting", vec![], "", i + 1, indent + 1));
+            diagnostics.push(warning(
+                "quarto_yaml_nesting",
+                vec![],
+                "",
+                i + 1,
+                indent + 1,
+            ));
         }
     }
-    FrontMatter { meta: top, lines: close + 1, diagnostics }
+    FrontMatter {
+        meta: top,
+        lines: close + 1,
+        diagnostics,
+    }
 }
 
 /// The title block of the draft: the HTML that stands for the front matter,
@@ -302,12 +336,16 @@ pub(crate) fn title_block(ctx: &Context) -> String {
     if title.is_empty() && names.is_empty() && date.is_empty() && abstract_text.is_empty() {
         return String::new();
     }
-    let mut out = String::from("<header class=\"quarto-title-block\" data-librepaper-generated=\"quarto\">");
+    let mut out =
+        String::from("<header class=\"quarto-title-block\" data-librepaper-generated=\"quarto\">");
     if !title.is_empty() {
         out.push_str(&format!("<h1>{}</h1>", escape(&title)));
     }
     if !names.is_empty() {
-        out.push_str(&format!("<p class=\"quarto-author\">{}</p>", escape(&names.join(", "))));
+        out.push_str(&format!(
+            "<p class=\"quarto-author\">{}</p>",
+            escape(&names.join(", "))
+        ));
     }
     if !date.is_empty() {
         out.push_str(&format!("<p class=\"quarto-date\">{}</p>", escape(&date)));
@@ -332,16 +370,29 @@ mod tests {
     fn front_matter_becomes_a_title_block() {
         let source = "---\ntitle: Draft title\nauthors:\n  - name: Ada Lovelace\ndate: 1843\nabstract: A short abstract\n---\n\nBody\n";
         let d = compose(source);
-        assert!(d.markdown.starts_with("<header class=\"quarto-title-block\""), "{}", d.markdown);
+        assert!(
+            d.markdown
+                .starts_with("<header class=\"quarto-title-block\""),
+            "{}",
+            d.markdown
+        );
         assert!(d.markdown.contains("<h1>Draft title</h1>"));
-        assert!(d.markdown.contains("<p class=\"quarto-author\">Ada Lovelace</p>"));
+        assert!(d
+            .markdown
+            .contains("<p class=\"quarto-author\">Ada Lovelace</p>"));
         assert!(d.markdown.contains("<p class=\"quarto-date\">1843</p>"));
-        assert!(d.markdown.contains("<strong>Abstract</strong><p>A short abstract</p>"));
+        assert!(d
+            .markdown
+            .contains("<strong>Abstract</strong><p>A short abstract</p>"));
         assert!(!d.markdown.contains("\n---\n"));
         // The generated line has no source line; the prose keeps its own.
         assert_eq!(d.line_map[0], None);
         assert_eq!(d.line_map.last(), Some(&Some(10)));
-        assert_eq!(d.origin[0], (1, 7), "the title block belongs to the front matter");
+        assert_eq!(
+            d.origin[0],
+            (1, 7),
+            "the title block belongs to the front matter"
+        );
     }
 
     #[test]
@@ -359,16 +410,32 @@ mod tests {
         let fm = parse_front_matter(&lines);
         assert!(fm.diagnostics.is_empty(), "{:?}", fm.diagnostics);
         assert_eq!(fm.lines, 8);
-        let Some(Yaml::List(authors)) = get(&fm.meta, "authors") else { panic!() };
+        let Some(Yaml::List(authors)) = get(&fm.meta, "authors") else {
+            panic!()
+        };
         assert_eq!(authors.len(), 2);
-        let Yaml::Map(first) = &authors[0] else { panic!() };
-        assert_eq!(get(first, "affiliation"), Some(&Yaml::Str("Analytical Engine".into())));
-        assert_eq!(get(&fm.meta, "execute"), Some(&Yaml::Map(vec![("echo".into(), Yaml::Bool(false))])));
+        let Yaml::Map(first) = &authors[0] else {
+            panic!()
+        };
+        assert_eq!(
+            get(first, "affiliation"),
+            Some(&Yaml::Str("Analytical Engine".into()))
+        );
+        assert_eq!(
+            get(&fm.meta, "execute"),
+            Some(&Yaml::Map(vec![("echo".into(), Yaml::Bool(false))]))
+        );
 
         let unfinished = compose("---\ntitle: Still editing\n\n# Intro\n\nText");
         assert!(unfinished.markdown.contains("Still editing"));
         assert_eq!(unfinished.diagnostics[0].message, "quarto_yaml_unfinished");
-        assert_eq!((unfinished.diagnostics[0].line, unfinished.diagnostics[0].column), (1, 1));
+        assert_eq!(
+            (
+                unfinished.diagnostics[0].line,
+                unfinished.diagnostics[0].column
+            ),
+            (1, 1)
+        );
 
         let fm = parse_front_matter(&["---", "title: x", "oops", "---"]);
         assert_eq!(fm.diagnostics[0].message, "quarto_yaml_parse_failed");
@@ -384,7 +451,10 @@ mod tests {
         assert_eq!(scalar("-1.5"), Yaml::Num(-1.5));
         assert_eq!(scalar("\"a\\nb\""), Yaml::Str("a\nb".into()));
         assert_eq!(scalar("'it''s'"), Yaml::Str("it's".into()));
-        assert_eq!(scalar("[a, 2]"), Yaml::List(vec![Yaml::Str("a".into()), Yaml::Num(2.0)]));
+        assert_eq!(
+            scalar("[a, 2]"),
+            Yaml::List(vec![Yaml::Str("a".into()), Yaml::Num(2.0)])
+        );
         assert_eq!(scalar("éa"), Yaml::Str("éa".into()));
         assert_eq!(Yaml::Num(1843.0).text(), "1843");
     }

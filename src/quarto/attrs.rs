@@ -99,7 +99,10 @@ mod tests {
         let a = parse_attributes("{#fig-a .wide .x key=\"two words\" n=3}");
         assert_eq!(a.id, "fig-a");
         assert_eq!(a.classes, ["wide", "x"]);
-        assert_eq!(a.attrs[0], ("key".to_string(), Yaml::Str("two words".into())));
+        assert_eq!(
+            a.attrs[0],
+            ("key".to_string(), Yaml::Str("two words".into()))
+        );
         assert_eq!(a.attrs[1], ("n".to_string(), Yaml::Num(3.0)));
     }
 

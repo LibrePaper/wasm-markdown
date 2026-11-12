@@ -99,7 +99,9 @@ pub(crate) fn crossrefs(text: &str, refs: &Refs) -> String {
         let start = i + at;
         i = start + 1;
         let Some(kind) = KINDS.into_iter().find(|k| {
-            text[start + 1..].strip_prefix(k).is_some_and(|rest| rest.starts_with('-'))
+            text[start + 1..]
+                .strip_prefix(k)
+                .is_some_and(|rest| rest.starts_with('-'))
         }) else {
             continue;
         };
@@ -137,7 +139,8 @@ pub(crate) fn crossrefs(text: &str, refs: &Refs) -> String {
 /// Id prefixes that mark a div as a numbered target: figures, tables,
 /// sections, equations, listings and the theorem family.
 const DIV_PREFIXES: [&str; 15] = [
-    "fig", "tbl", "sec", "eq", "lst", "thm", "lem", "cor", "prp", "cnj", "def", "exm", "exr", "sol", "rem",
+    "fig", "tbl", "sec", "eq", "lst", "thm", "lem", "cor", "prp", "cnj", "def", "exm", "exr",
+    "sol", "rem",
 ];
 
 /// Whether a div id starts with a cross-reference prefix (`fig-`, `thm-`...).
@@ -186,10 +189,19 @@ mod tests {
                       See @fig-trend and @tbl-one and @fig-nope, `@fig-trend` and [@fig-trend](x).\n\n\
                       ::: {#tbl-one}\nTable caption\n:::\n";
         let d = compose(source).markdown;
-        assert!(d.contains("<div class=\"callout-note\" id=\"intro\">"), "{d}");
+        assert!(
+            d.contains("<div class=\"callout-note\" id=\"intro\">"),
+            "{d}"
+        );
         assert!(d.contains("<div id=\"tbl-one\">"), "{d}");
-        assert!(d.contains("See <a class=\"quarto-crossref\" href=\"#fig-trend\">Figure 1</a>.\n"), "a div's text is resolved too: {d}");
-        assert!(d.contains("<a class=\"quarto-crossref\" href=\"#fig-trend\">Figure 1</a> and "), "{d}");
+        assert!(
+            d.contains("See <a class=\"quarto-crossref\" href=\"#fig-trend\">Figure 1</a>.\n"),
+            "a div's text is resolved too: {d}"
+        );
+        assert!(
+            d.contains("<a class=\"quarto-crossref\" href=\"#fig-trend\">Figure 1</a> and "),
+            "{d}"
+        );
         assert!(d.contains("href=\"#tbl-one\">Table 1</a>"), "{d}");
         assert!(d.contains("@fig-nope"), "unresolved stays text: {d}");
         assert!(d.contains("`@fig-trend`"), "inline code is untouched: {d}");

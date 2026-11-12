@@ -53,7 +53,10 @@ fn render_draft(markdown: &str) -> Vec<Rendered> {
         .position(|c| matches!(c.data().value, NodeValue::FootnoteDefinition(_)))
         .unwrap_or(children.len());
     let marker = |n: usize| {
-        NodeValue::HtmlBlock(NodeHtmlBlock { block_type: 2, literal: format!("<!--lp-block-{n}-->") })
+        NodeValue::HtmlBlock(NodeHtmlBlock {
+            block_type: 2,
+            literal: format!("<!--lp-block-{n}-->"),
+        })
     };
     for (n, child) in children.iter().enumerate().take(limit) {
         child.insert_before(arena.alloc(marker(n).into()));
@@ -70,7 +73,9 @@ fn render_draft(markdown: &str) -> Vec<Rendered> {
     let mut at = 0;
     for n in 0..=limit {
         let text = format!("<!--lp-block-{n}-->");
-        let Some(found) = html[at..].find(&text) else { break };
+        let Some(found) = html[at..].find(&text) else {
+            break;
+        };
         cuts.push((at + found, at + found + text.len()));
         at += found + text.len();
     }
@@ -84,7 +89,9 @@ fn render_draft(markdown: &str) -> Vec<Rendered> {
             NodeValue::FrontMatter(_) => true,
             NodeValue::HtmlBlock(block) => {
                 let literal = block.literal.trim();
-                literal.starts_with("<!--") && literal.ends_with("-->") && literal.matches("<!--").count() == 1
+                literal.starts_with("<!--")
+                    && literal.ends_with("-->")
+                    && literal.matches("<!--").count() == 1
             }
             _ => false,
         };
@@ -93,7 +100,11 @@ fn render_draft(markdown: &str) -> Vec<Rendered> {
             continue;
         }
         let (start, end) = (ast.sourcepos.start.line, ast.sourcepos.end.line);
-        out.push(Rendered { from: start, to: end.max(start), html: piece.to_string() });
+        out.push(Rendered {
+            from: start,
+            to: end.max(start),
+            html: piece.to_string(),
+        });
     }
     out
 }
@@ -135,7 +146,10 @@ pub fn compile_blocks(source: &str, main: &str, files: Files, assets: Resolve) -
         .into_iter()
         .map(|(from, to, html)| serde_json::json!({ "from_line": from, "to_line": to, "html": html }))
         .collect();
-    Blocks { json: serde_json::json!({ "blocks": list }).to_string(), diagnostics: draft.diagnostics }
+    Blocks {
+        json: serde_json::json!({ "blocks": list }).to_string(),
+        diagnostics: draft.diagnostics,
+    }
 }
 
 #[cfg(test)]
@@ -177,7 +191,11 @@ mod tests {
         let source = "# Model\n\nA paragraph.\n\n- one\n- two\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n```rust\nfn main() {}\n```\n";
         let blocks = run(source, "paper.md", &no_files);
         assert_eq!(lines(&blocks), [(1, 1), (3, 3), (5, 6), (8, 10), (12, 14)]);
-        assert!(blocks[0].html.starts_with("<h1") && blocks[0].html.contains("id=\"model\""), "{}", blocks[0].html);
+        assert!(
+            blocks[0].html.starts_with("<h1") && blocks[0].html.contains("id=\"model\""),
+            "{}",
+            blocks[0].html
+        );
         assert!(blocks[1].html.starts_with("<p>A paragraph.</p>"));
         assert!(blocks[2].html.starts_with("<ul>") && blocks[2].html.contains("<li>two</li>"));
         assert!(blocks[3].html.starts_with("<table>"));
@@ -187,13 +205,32 @@ mod tests {
 
     #[test]
     fn footnote_numbers_and_heading_ids_are_the_pages() {
-        let source = "# A\n\nOne.[^x]\n\n# A\n\nTwo.[^y] and again.[^x]\n\n[^x]: first\n[^y]: second\n";
+        let source =
+            "# A\n\nOne.[^x]\n\n# A\n\nTwo.[^y] and again.[^x]\n\n[^x]: first\n[^y]: second\n";
         let blocks = run(source, "paper.md", &no_files);
-        assert_eq!(lines(&blocks), [(1, 1), (3, 3), (5, 5), (7, 7)], "no footnote section: {blocks:?}");
-        assert!(blocks[1].html.contains("data-footnote-ref>1</a>"), "{}", blocks[1].html);
-        assert!(blocks[3].html.contains("data-footnote-ref>2</a>"), "{}", blocks[3].html);
-        assert!(blocks[2].html.contains("id=\"a-1\""), "the second heading is a-1: {}", blocks[2].html);
-        assert!(!blocks.iter().any(|b| b.html.contains("class=\"footnotes\"")));
+        assert_eq!(
+            lines(&blocks),
+            [(1, 1), (3, 3), (5, 5), (7, 7)],
+            "no footnote section: {blocks:?}"
+        );
+        assert!(
+            blocks[1].html.contains("data-footnote-ref>1</a>"),
+            "{}",
+            blocks[1].html
+        );
+        assert!(
+            blocks[3].html.contains("data-footnote-ref>2</a>"),
+            "{}",
+            blocks[3].html
+        );
+        assert!(
+            blocks[2].html.contains("id=\"a-1\""),
+            "the second heading is a-1: {}",
+            blocks[2].html
+        );
+        assert!(!blocks
+            .iter()
+            .any(|b| b.html.contains("class=\"footnotes\"")));
     }
 
     #[test]
@@ -208,38 +245,74 @@ mod tests {
         let source = "![x](fig/one.png)\n";
         let assets = |p: &str| (p == "fig/one.png").then(|| "https://cdn.test/one.png".to_string());
         let blocks = compile_blocks(source, "paper.md", &no_files, &assets);
-        assert!(blocks.json.contains("https://cdn.test/one.png"), "{}", blocks.json);
+        assert!(
+            blocks.json.contains("https://cdn.test/one.png"),
+            "{}",
+            blocks.json
+        );
     }
 
     #[test]
     fn a_quarto_title_block_folds_into_the_front_matter() {
         let source = "---\ntitle: T\nauthor: Ada\n---\n\nSee @fig-x.\n\n```{r}\n#| label: fig-x\nplot(1)\n```\n\n::: {.note}\nHi\n:::\n";
         let blocks = run(source, "paper.qmd", &no_files);
-        assert_eq!(lines(&blocks), [(1, 4), (6, 6), (8, 11), (13, 15)], "{blocks:?}");
+        assert_eq!(
+            lines(&blocks),
+            [(1, 4), (6, 6), (8, 11), (13, 15)],
+            "{blocks:?}"
+        );
         assert!(blocks[0].html.contains("<h1>T</h1>"), "{}", blocks[0].html);
-        assert!(blocks[1].html.contains("<a class=\"quarto-crossref\" href=\"#fig-x\">Figure 1</a>"), "{}", blocks[1].html);
+        assert!(
+            blocks[1]
+                .html
+                .contains("<a class=\"quarto-crossref\" href=\"#fig-x\">Figure 1</a>"),
+            "{}",
+            blocks[1].html
+        );
         assert!(blocks[2].html.contains("plot(1)"));
-        assert!(blocks[3].html.starts_with("<div class=\"note\">"), "a div is rendered: {}", blocks[3].html);
-        assert!(blocks[3].html.contains("<p>Hi</p>") && blocks[3].html.ends_with("</div>"), "{}", blocks[3].html);
+        assert!(
+            blocks[3].html.starts_with("<div class=\"note\">"),
+            "a div is rendered: {}",
+            blocks[3].html
+        );
+        assert!(
+            blocks[3].html.contains("<p>Hi</p>") && blocks[3].html.ends_with("</div>"),
+            "{}",
+            blocks[3].html
+        );
     }
 
     #[test]
     fn a_cells_code_and_output_are_one_block() {
         let source = "# Results\n\n```{r}\n#| label: first\na <- 1\n```\n\nAfter.\n";
         let read = |p: &str| {
-            (p == ".librepaper/quarto.json").then(|| r#"{"outputs":[{"line":3,"html":"<p>RESULT</p>"}],"note":"From a run"}"#.to_string())
+            (p == ".librepaper/quarto.json").then(|| {
+                r#"{"outputs":[{"line":3,"html":"<p>RESULT</p>"}],"note":"From a run"}"#.to_string()
+            })
         };
         let blocks = run(source, "paper.qmd", &read);
         // The note is generated before the first line, with nothing to
         // belong to but the first line, so it joins the heading.
         assert_eq!(lines(&blocks), [(1, 1), (3, 6), (8, 8)], "{blocks:?}");
         assert!(blocks[0].html.contains("lp-results-note"));
-        assert!(blocks[1].html.contains("a &lt;- 1") && blocks[1].html.contains("<div class=\"lp-cell-output\"><p>RESULT</p></div>"), "{}", blocks[1].html);
+        assert!(
+            blocks[1].html.contains("a &lt;- 1")
+                && blocks[1]
+                    .html
+                    .contains("<div class=\"lp-cell-output\"><p>RESULT</p></div>"),
+            "{}",
+            blocks[1].html
+        );
     }
 
     #[test]
     fn diagnostics_come_with_the_blocks() {
-        let blocks = compile_blocks("::: {.x}\ntext\n", "paper.qmd", &no_files, &markdown::no_assets);
+        let blocks = compile_blocks(
+            "::: {.x}\ntext\n",
+            "paper.qmd",
+            &no_files,
+            &markdown::no_assets,
+        );
         assert_eq!(blocks.diagnostics[0].message, "quarto_div_unfinished");
     }
 }

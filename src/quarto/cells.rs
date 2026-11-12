@@ -10,7 +10,11 @@ use super::{verbatim_fence, Context, Out, Output};
 
 /// The value of an option, looking in the cell first and the defaults second.
 /// A null counts as absent, like JavaScript's `??`.
-pub(crate) fn option<'a>(cell: &'a [(String, Yaml)], defaults: &'a [(String, Yaml)], key: &str) -> Option<&'a Yaml> {
+pub(crate) fn option<'a>(
+    cell: &'a [(String, Yaml)],
+    defaults: &'a [(String, Yaml)],
+    key: &str,
+) -> Option<&'a Yaml> {
     get(cell, key)
         .filter(|v| **v != Yaml::Null)
         .or_else(|| get(defaults, key).filter(|v| **v != Yaml::Null))
@@ -81,7 +85,9 @@ fn knitr_commas(text: &str) -> String {
             }
             if j < chars.len() && chars[j].is_ascii_alphabetic() {
                 j += 1;
-                while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '_' || chars[j] == '-') {
+                while j < chars.len()
+                    && (chars[j].is_ascii_alphanumeric() || chars[j] == '_' || chars[j] == '-')
+                {
                     j += 1;
                 }
                 while j < chars.len() && chars[j].is_whitespace() {
@@ -135,20 +141,34 @@ pub(crate) fn build_cell(fence: &OpenFence, lines: &[&str], end: usize) -> Cell 
         None if !info_parsed.id.is_empty() => info_parsed.id.clone(),
         None => parsed.id.clone(),
     };
-    Cell { start: fence.start, end, language: language_of(&fence.info), options: merged, label, code }
+    Cell {
+        start: fence.start,
+        end,
+        language: language_of(&fence.info),
+        options: merged,
+        label,
+        code,
+    }
 }
 
 /// Puts a cell in the draft: with a saved output, its code (unless `echo` is
 /// off) followed by the output; without one, the whole cell as source. The
 /// generated lines belong to the cell, so the editor folds them into it.
-pub(crate) fn display(cell: &Cell, output: Option<&Output>, lines: &[&str], ctx: &mut Context, out: &mut Out) {
+pub(crate) fn display(
+    cell: &Cell,
+    output: Option<&Output>,
+    lines: &[&str],
+    ctx: &mut Context,
+    out: &mut Out,
+) {
     let span = (cell.start, cell.end);
     match output {
         Some(output) => {
             // Shown as Quarto does: the code without its fence or `#|`
             // lines, unless echo is off, then the output.
             let echo = option(&cell.options, ctx.options, "echo");
-            let shown = !matches!(echo, Some(Yaml::Bool(false))) && !matches!(echo, Some(Yaml::Str(s)) if s == "false");
+            let shown = !matches!(echo, Some(Yaml::Bool(false)))
+                && !matches!(echo, Some(Yaml::Str(s)) if s == "false");
             let code = cell.code.join("\n");
             if shown && !code.trim().is_empty() {
                 let body = cell.end - cell.start - 1;
@@ -203,10 +223,17 @@ mod tests {
         );
         let lines: Vec<&str> = d.markdown.split('\n').collect();
         assert!(lines.contains(&"```r"));
-        assert!(!lines.contains(&"#| label: first"), "no option lines when output is shown");
+        assert!(
+            !lines.contains(&"#| label: first"),
+            "no option lines when output is shown"
+        );
         let position = |text: &str| lines.iter().position(|l| *l == text).unwrap();
         let one = position("<div class=\"lp-cell-output\"><p>ONE</p></div>");
-        assert_eq!((lines[one - 1], lines[one + 1]), ("", ""), "generated HTML is a block of its own");
+        assert_eq!(
+            (lines[one - 1], lines[one + 1]),
+            ("", ""),
+            "generated HTML is a block of its own"
+        );
         assert!(position("a <- 1") < one);
         assert!(one < position("Between."));
         assert_eq!(d.line_map[one], None);
@@ -220,7 +247,10 @@ mod tests {
 
     #[test]
     fn a_hidden_cell_gets_no_output_and_stays_verbatim() {
-        let d = with_outputs(RESULTS, r#"{"outputs":[{"line":17,"html":"<p>HIDDEN</p>"}]}"#);
+        let d = with_outputs(
+            RESULTS,
+            r#"{"outputs":[{"line":17,"html":"<p>HIDDEN</p>"}]}"#,
+        );
         assert!(!d.markdown.contains("HIDDEN"));
         assert!(d.markdown.contains("#| label: hidden"));
         let bare = compose(RESULTS);
@@ -231,10 +261,19 @@ mod tests {
     #[test]
     fn echo_decides_whether_the_code_is_shown() {
         let run = |front: &str, opt: &str| {
-            let source = format!("---\ntitle: E\n{front}---\n\n```{{r}}\n#| label: only\n{opt}shown_code()\n```\n");
+            let source = format!(
+                "---\ntitle: E\n{front}---\n\n```{{r}}\n#| label: only\n{opt}shown_code()\n```\n"
+            );
             let line = source.split('\n').position(|l| l == "```{r}").unwrap() + 1;
             let json = format!(r#"{{"outputs":[{{"line":{line},"html":"<p>OUT</p>"}}]}}"#);
-            draft(&source, "e.qmd", &no_files, &Extras::from_json(&json), false).markdown
+            draft(
+                &source,
+                "e.qmd",
+                &no_files,
+                &Extras::from_json(&json),
+                false,
+            )
+            .markdown
         };
         assert!(run("", "").contains("shown_code()"));
         let hidden = run("", "#| echo: false\n");
@@ -243,5 +282,4 @@ mod tests {
         assert!(!run("execute:\n  echo: false\n", "").contains("shown_code"));
         assert!(run("execute:\n  echo: false\n", "#| echo: true\n").contains("shown_code"));
     }
-
 }

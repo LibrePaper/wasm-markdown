@@ -141,13 +141,17 @@ pub(crate) fn spans(text: &str, ctx: &mut Context) -> String {
     while let Some(at) = text[i..].find('[') {
         let start = i + at;
         i = start + 1;
-        let Some(close) = text[start + 1..].find(']') else { break };
+        let Some(close) = text[start + 1..].find(']') else {
+            break;
+        };
         let close = start + 1 + close;
         if close == start + 1 || !text[close + 1..].starts_with("{#") {
             continue;
         }
         let id_start = close + 3;
-        let Some(brace) = text[id_start..].find('}') else { continue };
+        let Some(brace) = text[id_start..].find('}') else {
+            continue;
+        };
         let id = &text[id_start..id_start + brace];
         let mut chars = id.chars();
         let valid = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
@@ -156,7 +160,10 @@ pub(crate) fn spans(text: &str, ctx: &mut Context) -> String {
             continue;
         }
         out.push_str(&text[copied..start]);
-        let attrs = Attrs { id: id.to_string(), ..Attrs::default() };
+        let attrs = Attrs {
+            id: id.to_string(),
+            ..Attrs::default()
+        };
         out.push_str(&render_span(&text[start + 1..close], &attrs, ctx));
         copied = id_start + brace + 1;
         i = copied;
@@ -167,7 +174,6 @@ pub(crate) fn spans(text: &str, ctx: &mut Context) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::quarto::tests::compose;
 
     #[test]
@@ -177,7 +183,10 @@ mod tests {
             "\n<div class=\"callout-note\">\n\nCompact note.\n\n</div>\n\n"
         );
         let d = compose("::: {.callout-note}\n<div>\n  first\n</div>\n:::\n").markdown;
-        assert!(d.starts_with("\n<div class=\"callout-note\">\n\n<div>\n  first\n</div>\n\n</div>\n"), "{d}");
+        assert!(
+            d.starts_with("\n<div class=\"callout-note\">\n\n<div>\n  first\n</div>\n\n</div>\n"),
+            "{d}"
+        );
         assert_eq!(
             compose("::: {.callout-note}\nStill typing\n  indented").markdown,
             "\n<div class=\"callout-note\">\n\nStill typing\n  indented\n\n</div>\n"
@@ -188,15 +197,31 @@ mod tests {
     fn divs_nest_and_the_generated_lines_belong_to_the_outer_fence() {
         let d = compose("::: {.a}\nOuter\n::: {#in .b .c}\nInner *text*\n:::\n:::\n");
         assert!(d.markdown.contains("<div class=\"a\">"), "{}", d.markdown);
-        assert!(d.markdown.contains("<div class=\"b c\" id=\"in\">"), "{}", d.markdown);
+        assert!(
+            d.markdown.contains("<div class=\"b c\" id=\"in\">"),
+            "{}",
+            d.markdown
+        );
         assert_eq!(d.markdown.matches("</div>").count(), 2);
         assert!(!d.markdown.contains("```"), "{}", d.markdown);
         // The opening line of the outer div claims the whole div.
-        let at = d.markdown.split('\n').position(|l| l == "<div class=\"a\">").unwrap();
+        let at = d
+            .markdown
+            .split('\n')
+            .position(|l| l == "<div class=\"a\">")
+            .unwrap();
         assert_eq!((d.line_map[at], d.origin[at]), (None, (1, 6)));
-        let inner = d.markdown.split('\n').position(|l| l == "<div class=\"b c\" id=\"in\">").unwrap();
+        let inner = d
+            .markdown
+            .split('\n')
+            .position(|l| l == "<div class=\"b c\" id=\"in\">")
+            .unwrap();
         assert_eq!(d.origin[inner], (3, 5));
-        let text = d.markdown.split('\n').position(|l| l == "Inner *text*").unwrap();
+        let text = d
+            .markdown
+            .split('\n')
+            .position(|l| l == "Inner *text*")
+            .unwrap();
         assert_eq!(d.line_map[text], Some(4));
     }
 

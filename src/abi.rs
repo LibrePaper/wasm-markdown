@@ -23,7 +23,9 @@ fn read_text(path: &str) -> Option<String> {
 /// What this module is: markdown, with the host's figures resolved into it,
 /// or the Quarto dialect of it when the main file is a `.qmd`.
 fn render(source: &str, title: &str) -> Compiled {
-    crate::markdown::compile_for(source, title, &abi::main_name(), &read_text, &|path| abi::asset_url(path))
+    crate::markdown::compile_for(source, title, &abi::main_name(), &read_text, &|path| {
+        abi::asset_url(path)
+    })
 }
 
 fn heading(source: &str) -> String {
@@ -85,7 +87,9 @@ pub unsafe extern "C" fn draft(source: *const u8, len: usize, for_pandoc: u32) -
 #[no_mangle]
 pub unsafe extern "C" fn compile_blocks(source: *const u8, len: usize) -> usize {
     let source = abi::text_at(source, len);
-    let blocks = crate::blocks::compile_blocks(source, &abi::main_name(), &read_text, &|path| abi::asset_url(path));
+    let blocks = crate::blocks::compile_blocks(source, &abi::main_name(), &read_text, &|path| {
+        abi::asset_url(path)
+    });
     let mut answer = Compiled::page(blocks.json);
     answer.diagnostics = blocks.diagnostics;
     abi::answer_compiled(answer)
