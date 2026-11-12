@@ -15,7 +15,9 @@
 /// other renderer.
 pub use wasm_helpers::{diagnostic, page};
 
+pub mod blocks;
 pub mod markdown;
+pub mod quarto;
 
 #[cfg(all(target_arch = "wasm32", feature = "exports"))]
 mod abi;

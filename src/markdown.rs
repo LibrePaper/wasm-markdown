@@ -206,6 +206,42 @@ pub fn compile_with(source: &str, title: &str, assets: Resolve) -> crate::diagno
     crate::diagnostic::Compiled::page(render_with(source, title, assets))
 }
 
+/// The text files the host handed the module, by project path. A Quarto
+/// document reads its includes and the saved results of its cells from here.
+pub type Files<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+/// A Quarto source as the page the preview shows: its draft, rendered like
+/// any other markdown, with what the draft had to say attached.
+pub fn compile_quarto(
+    source: &str,
+    title: &str,
+    path: &str,
+    files: Files,
+    assets: Resolve,
+) -> crate::diagnostic::Compiled {
+    let extras = crate::quarto::Extras::load(files);
+    let draft = crate::quarto::draft(source, path, files, &extras, false);
+    let mut compiled = compile_with(&draft.markdown, title, assets);
+    compiled.diagnostics = draft.diagnostics;
+    compiled
+}
+
+/// Compiles a source in the dialect its main file's name selects: Quarto for
+/// `.qmd`, plain markdown for everything else.
+pub fn compile_for(
+    source: &str,
+    title: &str,
+    main: &str,
+    files: Files,
+    assets: Resolve,
+) -> crate::diagnostic::Compiled {
+    if crate::quarto::is_quarto(main) {
+        compile_quarto(source, title, main, files, assets)
+    } else {
+        compile_with(source, title, assets)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +313,32 @@ mod tests {
         let out = render_body("It costs $5 today and $10 tomorrow.\n");
         assert!(!out.contains("data-math-style"), "{out}");
         assert!(out.contains("$5 today and $10"), "{out}");
+    }
+
+    fn no_files(_: &str) -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn markdown_output_is_the_same_through_the_dialect_router() {
+        let source = "# A Paper\n\nSome *emphasis* and a note.[^1]\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n[^1]: the note\n";
+        let direct = render(source, "A Paper");
+        for main in ["paper.md", "", "paper.markdown"] {
+            let routed = compile_for(source, "A Paper", main, &no_files, &no_assets);
+            assert!(routed.diagnostics.is_empty());
+            assert_eq!(routed.into_result().unwrap(), direct, "{main}");
+        }
+    }
+
+    #[test]
+    fn a_qmd_compiles_its_draft_and_reports_what_it_found() {
+        let source = "---\ntitle: Paper\n---\n\nSee @fig-a.\n\n```{r}\n#| label: fig-a\nplot(1)\n```\n\n```{r}\nopen\n";
+        let out = compile_for(source, "Paper", "paper.qmd", &no_files, &no_assets);
+        assert_eq!(out.diagnostics.len(), 1);
+        assert_eq!(out.diagnostics[0].message, "quarto_cell_unfinished");
+        let page = out.into_result().unwrap();
+        assert!(page.contains("<h1>Paper</h1>"), "{page}");
+        assert!(page.contains("Figure 1"), "{page}");
     }
 
     #[test]

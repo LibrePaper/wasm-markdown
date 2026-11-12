@@ -78,7 +78,9 @@ memory, calls, and reads the result back out.
 | `alloc` / `dealloc` | reserve and release memory for arguments |
 | `compile(source, title)` | render; returns the length of the result |
 | `output_ptr` / `ok` / `output_kind` | where the result is, whether it is a document, and its format (1 = HTML) |
-| `diagnostics` / `diagnostics_ptr` | what the compiler had to say, as JSON — always `[]` here, since markdown cannot fail |
+| `diagnostics` / `diagnostics_ptr` | what the compiler had to say, as JSON — `[]` for Markdown, which cannot fail; warnings for Quarto |
+| `draft(source, for_pandoc)` | the Markdown draft of a source and its line map, as JSON |
+| `compile_blocks(source)` | the document's top-level blocks as HTML with their source lines, as JSON |
 | `failure_page(title)` | the diagnostics dressed as a document |
 | `title_of(source)` | the first level-one heading |
 | `add_file` / `clear_files` / `set_main` | the file map a document is compiled against |
@@ -91,6 +93,42 @@ renderer without first asking which it has. Whether an export does anything is
 the module's business, not the host's.
 
 See `src/abi.rs`, which documents the convention in full.
+
+## Quarto
+
+When the main file named by `set_main` ends in `.qmd`, `compile`, `draft` and
+`compile_blocks` read the source as Quarto; anything else is Markdown exactly
+as before. Quarto is a dialect of this renderer, not a second one: the source
+is first turned into a Markdown *draft* (`src/quarto.rs`), and comrak renders
+that. Nothing is executed. The draft has
+
+- the front matter as a title block (title, authors, date, abstract);
+- each executable cell shown verbatim, or, when the host passes the output of
+  a run, as its code followed by that output;
+- top-level `:::` divs and shortcodes other than `include` shown verbatim;
+- `{{< include >}}` expanded from the files added with `add_file`;
+- `@fig-`, `@tbl-`, `@sec-`, `@eq-` and `@lst-` references turned into
+  numbered links, and `[text]{#id}` into a span.
+
+The host may add `.librepaper/quarto.json` with `outputs` (each `{line, html,
+stale}`, `line` being the 1-based line of the cell's opening fence), a `note`,
+and the interface `strings` the draft prints. The host decides which saved
+result belongs to which cell; this module only places what it is given.
+Diagnostics carry a message key (`quarto_yaml_unfinished`, ...) with its
+arguments in `hints` as `name=value`, for the host to translate.
+
+`draft` answers `{"markdown", "line_map"}`: the draft and, per draft line, the
+1-based source line it came from, or `null` for a generated line. With
+`for_pandoc` the draft keeps the original front matter and has no title block.
+
+`compile_blocks` answers `{"blocks": [{"from_line", "to_line", "html"}]}`, for
+Markdown and Quarto alike: the top-level blocks in order, each rendered in the
+context of the whole document, so footnote numbers, heading ids and
+cross-reference numbers are the page's own. Generated content folds into the
+block it comes from (the title block into the front matter, a cell's output
+into the cell). The footnotes section, front matter and HTML comments are not
+blocks. The page is rendered once with a marker between the top-level nodes
+and cut at the markers.
 
 ## Keeping in step
 

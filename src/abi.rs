@@ -1,9 +1,9 @@
-//! The sixteen exports a host calls, and nothing else.
+//! The eighteen exports a host calls, and nothing else.
 //!
 //! Each one wraps the shared implementation in `wasm_helpers::abi`.
 //! They are written out rather than generated because a `#[no_mangle]` export
 //! has to be compiled into the `cdylib` that ships and cannot be inherited from
-//! a dependency -- and because sixteen signatures you can read beat a macro
+//! a dependency -- and because eighteen signatures you can read beat a macro
 //! that writes them and reports its errors somewhere else.
 //!
 //! Two of these do nothing here. `set_today` is accepted and ignored, since
@@ -15,9 +15,15 @@
 use wasm_helpers::abi;
 use wasm_helpers::diagnostic::Compiled;
 
-/// What this module is: markdown, with the host's figures resolved into it.
+/// A text file the host handed over, by project path.
+fn read_text(path: &str) -> Option<String> {
+    abi::file(std::path::Path::new(path)).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// What this module is: markdown, with the host's figures resolved into it,
+/// or the Quarto dialect of it when the main file is a `.qmd`.
 fn render(source: &str, title: &str) -> Compiled {
-    crate::markdown::compile_with(source, title, &|path| abi::asset_url(path))
+    crate::markdown::compile_for(source, title, &abi::main_name(), &read_text, &|path| abi::asset_url(path))
 }
 
 fn heading(source: &str) -> String {
@@ -48,6 +54,41 @@ pub unsafe extern "C" fn compile(
     let source = abi::text_at(source, source_len);
     let title = abi::text_at(title, title_len);
     abi::answer_compiled(render(source, title))
+}
+
+/// The Markdown draft of a source and the line each of its lines came from, as
+/// JSON: `{"markdown": "...", "line_map": [1, null, 2]}`. A Markdown source is
+/// its own draft. With `for_pandoc` a Quarto draft keeps its front matter.
+///
+/// # Safety
+/// `source` and `len` must describe UTF-8 written into this module.
+#[no_mangle]
+pub unsafe extern "C" fn draft(source: *const u8, len: usize, for_pandoc: u32) -> usize {
+    let source = abi::text_at(source, len);
+    let main = abi::main_name();
+    let draft = if crate::quarto::is_quarto(&main) {
+        let extras = crate::quarto::Extras::load(&read_text);
+        crate::quarto::draft(source, &main, &read_text, &extras, for_pandoc != 0)
+    } else {
+        crate::quarto::Draft::identity(source)
+    };
+    let mut answer = Compiled::page(draft.to_json());
+    answer.diagnostics = draft.diagnostics;
+    abi::answer_compiled(answer)
+}
+
+/// The top-level blocks of a source, each rendered to HTML in the context of
+/// the whole document, as JSON: `{"blocks": [{"from_line", "to_line", "html"}]}`.
+///
+/// # Safety
+/// `source` and `len` must describe UTF-8 written into this module.
+#[no_mangle]
+pub unsafe extern "C" fn compile_blocks(source: *const u8, len: usize) -> usize {
+    let source = abi::text_at(source, len);
+    let blocks = crate::blocks::compile_blocks(source, &abi::main_name(), &read_text, &|path| abi::asset_url(path));
+    let mut answer = Compiled::page(blocks.json);
+    answer.diagnostics = blocks.diagnostics;
+    abi::answer_compiled(answer)
 }
 
 /// # Safety
