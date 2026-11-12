@@ -256,6 +256,33 @@ fn link_end(line: &str, i: usize) -> Option<usize> {
     Some(close + 2 + line[close + 2..].find(')')? + 1)
 }
 
+/// Where an inline code span that opens at `i` ends: a run of N backticks
+/// opens it and the next run of exactly N closes it. Returns the end of the
+/// whole span, or none when no run closes it (the opening run is then literal
+/// text, [`backtick_run`] long).
+pub(crate) fn code_span_end(line: &str, i: usize) -> Option<usize> {
+    let b = line.as_bytes();
+    let n = backtick_run(line, i);
+    let mut j = i + n;
+    while j < b.len() {
+        if b[j] == b'`' {
+            let m = backtick_run(line, j);
+            if m == n {
+                return Some(j + m);
+            }
+            j += m;
+        } else {
+            j += 1;
+        }
+    }
+    None
+}
+
+/// The length of the run of backticks at `i`.
+pub(crate) fn backtick_run(line: &str, i: usize) -> usize {
+    line.as_bytes()[i..].iter().take_while(|&&c| c == b'`').count()
+}
+
 /// Makes the common cross references readable. Inline code and links are
 /// opaque; an unresolved reference stays source text.
 fn prose(line: &str, ctx: &mut Context) -> String {
@@ -266,14 +293,25 @@ fn prose(line: &str, ctx: &mut Context) -> String {
     let mut i = 0;
     while i < b.len() {
         let end = match b[i] {
-            b'`' => line[i + 1..].find('`').map(|k| i + 1 + k + 1),
+            b'\\' => {
+                // An escaped character is never a delimiter.
+                i += 2;
+                continue;
+            }
+            b'`' => match code_span_end(line, i) {
+                Some(e) => Some(e),
+                None => {
+                    i += backtick_run(line, i);
+                    continue;
+                }
+            },
             b'!' | b'[' => link_end(line, i),
             _ => None,
         };
         match end {
             Some(e) => {
                 out.push_str(&divs::spans(
-                    &refs::crossrefs(&line[text_start..i], refs),
+                    &refs::crossrefs(&line[text_start..i], refs, ctx.for_pandoc),
                     ctx,
                 ));
                 out.push_str(&line[i..e]);
@@ -284,7 +322,7 @@ fn prose(line: &str, ctx: &mut Context) -> String {
         }
     }
     out.push_str(&divs::spans(
-        &refs::crossrefs(&line[text_start..], refs),
+        &refs::crossrefs(&line[text_start..], refs, ctx.for_pandoc),
         ctx,
     ));
     out
@@ -602,13 +640,17 @@ pub fn draft(
             } else if let Some(&n) = div_opens.get(&i) {
                 // The fence becomes an HTML line; what follows is content.
                 let div = &parsed.divs[n];
-                if let Some(html) = div_html(div, &lines, &mut ctx, true) {
+                if refs::passes_through(div, &ctx) {
+                    out.push(line, mapped, (i, i));
+                } else if let Some(html) = div_html(div, &lines, &mut ctx, true) {
                     out.block(&html, (div.start, div.end.unwrap_or(last_line)));
                 }
                 open_divs.push(n);
             } else if let Some(&n) = div_closes.get(&i) {
                 let div = &parsed.divs[n];
-                if let Some(html) = div_html(div, &lines, &mut ctx, false) {
+                if refs::passes_through(div, &ctx) {
+                    out.push(line, mapped, (i, i));
+                } else if let Some(html) = div_html(div, &lines, &mut ctx, false) {
                     out.block(&html, (div.start, i));
                 }
                 open_divs.pop();
@@ -668,7 +710,9 @@ pub fn draft(
     // A div that is never closed is closed at the end of the file.
     while let Some(n) = open_divs.pop() {
         let div = &parsed.divs[n];
-        if let Some(html) = div_html(div, &lines, &mut ctx, false) {
+        if refs::passes_through(div, &ctx) {
+            // Pandoc closes a fenced div at the end of the file itself.
+        } else if let Some(html) = div_html(div, &lines, &mut ctx, false) {
             out.block(&html, (div.start, last_line));
         }
     }

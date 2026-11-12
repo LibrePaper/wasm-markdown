@@ -16,8 +16,11 @@ use crate::page::escape;
 
 use super::attrs::parse_attributes;
 use super::divs::{self, Div};
+use super::cells::option;
 use super::front_matter::{get, Map, Yaml};
-use super::{fence_closes, fence_open, prose, Context, Out, Parsed};
+use super::{
+    backtick_run, code_span_end, fence_closes, fence_open, prose, Context, Out, Parsed,
+};
 
 // ------------------------------------------------------------- references
 
@@ -308,7 +311,7 @@ impl Refs {
 
 /// One paragraph of Markdown as inline HTML, cross references resolved.
 fn inline_html(text: &str, refs: &Refs) -> String {
-    let html = crate::markdown::render_body(&crossrefs(text, refs));
+    let html = crate::markdown::render_body(&crossrefs(text, refs, false));
     let html = html.trim();
     let html = html
         .strip_prefix("<p>")
@@ -317,15 +320,111 @@ fn inline_html(text: &str, refs: &Refs) -> String {
     html.replace("\n\n", "\n")
 }
 
+/// The character an HTML entity at the start of `text` stands for, and how
+/// many characters the entity takes, the way comrak reads it: the named
+/// entities that matter in prose and numeric ones.
+fn entity_at(text: &[char]) -> Option<(char, usize)> {
+    if text.first() != Some(&'&') {
+        return None;
+    }
+    let end = text.iter().take(32).position(|&c| c == ';')?;
+    let name: String = text[1..end].iter().collect();
+    let c = match name.as_str() {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => '\u{a0}',
+        _ => {
+            let digits = name.strip_prefix('#')?;
+            let code = match digits.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => digits.parse().ok()?,
+            };
+            if digits.is_empty() || code == 0 {
+                '\u{fffd}'
+            } else {
+                char::from_u32(code).unwrap_or('\u{fffd}')
+            }
+        }
+    };
+    Some((c, end + 1))
+}
+
 /// The text of some inline Markdown, the way comrak collects it for a
-/// heading id or an `alt`.
+/// heading id or an `alt`: emphasis marks, link syntax and backslashes are
+/// gone, code is literal and entities are decoded.
 fn plain(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
     let mut i = 0;
     while i < chars.len() {
         match chars[i] {
-            '*' | '`' | '\\' | '[' => i += 1,
+            '`' => {
+                let run = chars[i..].iter().take_while(|&&c| c == '`').count();
+                let mut j = i + run;
+                let mut close = None;
+                while j < chars.len() {
+                    if chars[j] == '`' {
+                        let m = chars[j..].iter().take_while(|&&c| c == '`').count();
+                        if m == run {
+                            close = Some(j);
+                            break;
+                        }
+                        j += m;
+                    } else {
+                        j += 1;
+                    }
+                }
+                match close {
+                    Some(j) => {
+                        let mut code: String = chars[i + run..j].iter().collect();
+                        if code.len() > 2
+                            && code.starts_with(' ')
+                            && code.ends_with(' ')
+                            && code.trim() != ""
+                        {
+                            code = code[1..code.len() - 1].to_string();
+                        }
+                        out.push_str(&code);
+                        i = j + run;
+                    }
+                    None => {
+                        out.extend(std::iter::repeat_n('`', run));
+                        i += run;
+                    }
+                }
+            }
+            '\\' => match chars.get(i + 1) {
+                Some(&c) if c.is_ascii_punctuation() => {
+                    out.push(c);
+                    i += 2;
+                }
+                _ => {
+                    out.push('\\');
+                    i += 1;
+                }
+            },
+            '&' => match entity_at(&chars[i..]) {
+                Some((c, taken)) => {
+                    out.push(c);
+                    i += taken;
+                }
+                None => {
+                    out.push('&');
+                    i += 1;
+                }
+            },
+            '*' | '[' => i += 1,
+            '_' => {
+                // Intraword underscores are literal; the others are emphasis.
+                let word = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric());
+                if word(i.checked_sub(1).and_then(|k| chars.get(k))) && word(chars.get(i + 1)) {
+                    out.push('_');
+                }
+                i += 1;
+            }
             ']' => {
                 i += 1;
                 if chars.get(i) == Some(&'(') {
@@ -967,7 +1066,19 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
         }
         i += 1;
     }
-    cands.extend(parsed.cells.iter().map(|c| (c.start, c.label.clone())));
+    // A cell that `include: false` hides is not a target: it has no number
+    // and takes none from the cells after it.
+    let defaults: Map = match get(meta, "execute") {
+        Some(Yaml::Map(m)) => m.clone(),
+        _ => Vec::new(),
+    };
+    cands.extend(
+        parsed
+            .cells
+            .iter()
+            .filter(|c| option(&c.options, &defaults, "include") != Some(&Yaml::Bool(false)))
+            .map(|c| (c.start, c.label.clone())),
+    );
 
     // Number by kind, in document order.
     cands.retain(|(_, id)| prefix_kind(id).is_some());
@@ -1019,13 +1130,20 @@ fn label_char(b: u8) -> bool {
 }
 
 /// `@fig-x` and friends in one stretch of prose.
-pub(crate) fn crossrefs(text: &str, refs: &Refs) -> String {
+///
+/// With `pandoc` a resolved reference is a Markdown link, which Pandoc reads;
+/// otherwise it is the preview's HTML. Inline code is never rewritten.
+pub(crate) fn crossrefs(text: &str, refs: &Refs, pandoc: bool) -> String {
     let b = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut copied = 0;
     let mut i = 0;
-    while let Some(at) = text[i..].find('@') {
+    while let Some(at) = text[i..].find(['@', '`']) {
         let start = i + at;
+        if b[start] == b'`' {
+            i = code_span_end(text, start).unwrap_or(start + backtick_run(text, start));
+            continue;
+        }
         i = start + 1;
         let Some(kind) = PREFIXES.into_iter().find(|k| {
             text[start + 1..]
@@ -1051,11 +1169,15 @@ pub(crate) fn crossrefs(text: &str, refs: &Refs) -> String {
         let id = &text[start + 1..end];
         if let Some(label) = refs.reference_text(id) {
             out.push_str(&text[copied..start]);
-            out.push_str(&format!(
-                "<a class=\"quarto-crossref crossref\" href=\"#{}\">{}</a>",
-                escape(id),
-                escape(&label)
-            ));
+            if pandoc {
+                out.push_str(&format!("[{label}](#{id})"));
+            } else {
+                out.push_str(&format!(
+                    "<a class=\"quarto-crossref crossref\" href=\"#{}\">{}</a>",
+                    escape(id),
+                    escape(&label)
+                ));
+            }
             copied = end;
         }
         i = end;
@@ -1068,6 +1190,12 @@ pub(crate) fn crossrefs(text: &str, refs: &Refs) -> String {
 
 /// Whether a div is offered to [`div_open`]: a numbered target, a proof, a
 /// remark or solution, or an appendix.
+/// Whether the draft keeps this div's fence line as written: Pandoc reads
+/// fenced divs itself, and raw HTML would be dropped from its PDF.
+pub(crate) fn passes_through(div: &Div, ctx: &Context) -> bool {
+    ctx.for_pandoc && wants(div)
+}
+
 pub(crate) fn wants(div: &Div) -> bool {
     has_prefix(&div.id) || class_kind(div).is_some() || is_appendix(div)
 }
@@ -1161,6 +1289,9 @@ pub(crate) fn is_heading(line: &str) -> bool {
 /// `{#id}`, attributes removed), or none to leave it. Called for each heading
 /// line of the main text, before references are resolved in it.
 pub(crate) fn decorate_heading(line: &str, index: usize, ctx: &mut Context) -> Option<String> {
+    if ctx.for_pandoc {
+        return None;
+    }
     let h = ctx.refs.headings.get(&index)?;
     if !h.decorate || h.raw != line {
         return None;
@@ -1185,7 +1316,7 @@ pub(crate) fn decorate_heading(line: &str, index: usize, ctx: &mut Context) -> O
 
 /// The table of contents for `toc: true`, placed after the title block.
 pub(crate) fn toc(ctx: &Context) -> Option<String> {
-    (!ctx.refs.toc.is_empty()).then(|| ctx.refs.toc.clone())
+    (!ctx.for_pandoc && !ctx.refs.toc.is_empty()).then(|| ctx.refs.toc.clone())
 }
 
 /// Line-level constructs: figure images, table captions and their tables,
@@ -1195,6 +1326,9 @@ pub(crate) fn toc(ctx: &Context) -> Option<String> {
 /// driver handle line `i` (it may have written something before it).
 pub(crate) fn line(i: usize, lines: &[&str], ctx: &mut Context, out: &mut Out) -> Option<usize> {
     let refs = ctx.refs;
+    if ctx.for_pandoc {
+        return pandoc_line(i, lines, ctx, out);
+    }
     if refs.skip.contains(&i) {
         return Some(1);
     }
@@ -1218,6 +1352,33 @@ pub(crate) fn line(i: usize, lines: &[&str], ctx: &mut Context, out: &mut Out) -
     let text = prose(lines[i], ctx);
     out.push(&format!("{} {text}", refs.div_label(info)), Some(i), (i, i));
     Some(1)
+}
+
+/// For the draft Pandoc reads, only a labelled equation changes: its math
+/// stays and the `{#eq-x}` after it, which Pandoc would print, goes. Figures,
+/// tables, captions and theorems are Pandoc-native as written.
+fn pandoc_line(i: usize, lines: &[&str], ctx: &mut Context, out: &mut Out) -> Option<usize> {
+    let span = ctx.refs.items.get(&i)?;
+    if !matches!(span.item, Item::Equation { .. }) {
+        return None;
+    }
+    for l in i..=span.end {
+        let line = lines[l];
+        let from = if l == i {
+            line.find("$$").map_or(0, |k| k + 2)
+        } else {
+            0
+        };
+        let text = if l == span.end {
+            line[from..]
+                .find("$$")
+                .map_or(line, |k| &line[..from + k + 2])
+        } else {
+            line
+        };
+        out.push(text, Some(l), (l, l));
+    }
+    Some(span.end + 1 - i)
 }
 
 #[cfg(test)]
@@ -1486,5 +1647,98 @@ mod tests {
             (list[0]["from_line"].as_u64(), list[0]["to_line"].as_u64()),
             (Some(1), Some(5))
         );
+    }
+
+    fn pandoc(source: &str) -> String {
+        crate::quarto::draft(
+            source,
+            "main.qmd",
+            &no_files,
+            &crate::quarto::Extras::default(),
+            true,
+        )
+        .markdown
+    }
+
+    const EVERYTHING: &str = "---\ntitle: T\ntoc: true\nnumber-sections: true\n---\n\n\
+        # Intro {#sec-intro}\n\n\
+        ![Cap](p.png){#fig-x width=50%}\n\n\
+        | a | b |\n|---|---|\n| 1 | 2 |\n\n: Cap {#tbl-t}\n\n\
+        $$ y = x $$ {#eq-e}\n\n\
+        $$\ny = z\n$$ {#eq-f}\n\n\
+        ::: {#fig-d}\n![](d.png)\n\nDiv caption\n:::\n\n\
+        ::: {#thm-a}\n**Name.** Statement.\n:::\n\n\
+        See @fig-x, @tbl-t, @eq-e and @sec-intro.\n";
+
+    #[test]
+    fn pandoc_gets_native_markdown_for_every_reference_feature() {
+        let d = pandoc(EVERYTHING);
+        for banned in ["<figure", "<div class=\"equation\"", "<nav", "data-number", "<a ", "<span"] {
+            assert!(!d.contains(banned), "{banned} in:\n{d}");
+        }
+        for kept in [
+            "$$ y = x $$",
+            "$$\ny = z\n$$\n",
+            "![Cap](p.png){#fig-x width=50%}",
+            ": Cap {#tbl-t}",
+            "# Intro {#sec-intro}",
+            "::: {#fig-d}",
+            "Div caption",
+            "::: {#thm-a}",
+            "[Figure 1](#fig-x)",
+            "[Table 1](#tbl-t)",
+            "[Equation 1](#eq-e)",
+            "[Section 1](#sec-intro)",
+        ] {
+            assert_has(&d, kept);
+        }
+        assert!(!d.contains("{#eq-"), "{d}");
+        assert_eq!(d.matches("\n:::\n").count(), 2, "{d}");
+    }
+
+    #[test]
+    fn the_preview_keeps_its_html_for_the_same_document() {
+        let d = compose(EVERYTHING).markdown;
+        for html in ["<figure", "<div class=\"equation\"", "<nav", "data-number", "<a "] {
+            assert_has(&d, html);
+        }
+    }
+
+    #[test]
+    fn heading_ids_decode_entities_like_comrak() {
+        let source = "---\ntoc: true\n---\n\n## Cats &amp; dogs\n\n## A &lt;b&gt; &quot;q&quot; &#39;s&#39; &nbsp;x&#65;&#x42;\n\n\
+                      ## **Bold** and _em_ with `co&amp;de`\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "href=\"#cats--dogs\"");
+        assert_has(&d, "Cats &amp; dogs</a>");
+        assert_has(&d, "href=\"#a-b-q-s-xab\"");
+        assert_has(&d, "href=\"#bold-and-em-with-coampde\"");
+    }
+
+    #[test]
+    fn inline_code_ends_at_a_run_of_the_same_length() {
+        let source = "# H {#sec-h}\n\n``@fig-x`` and `a`` b` and ``a ` @fig-x`` then @sec-h.\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "``@fig-x`` and `a`` b` and ``a ` @fig-x`` then <a");
+        assert_has(&d, "href=\"#sec-h\">Section 1</a>");
+        let source = "![C](p.png){#fig-x}\n\n``@fig-x`` and then @fig-x.\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "``@fig-x`` and then <a class=\"quarto-crossref crossref\" href=\"#fig-x\">Figure 1</a>");
+    }
+
+    #[test]
+    fn hidden_cells_are_not_numbered_targets() {
+        let source = "```{r}\n#| label: fig-hidden\n#| include: false\n1\n```\n\n\
+                      ```{r}\n#| label: fig-shown\n#| fig-cap: Shown\n2\n```\n\n\
+                      See @fig-hidden and @fig-shown.\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "See @fig-hidden and <a");
+        assert_has(&d, "href=\"#fig-shown\">Figure 1</a>");
+        let source = format!("---\nexecute:\n  include: false\n---\n\n{source}");
+        let d = compose(&source).markdown;
+        assert_has(&d, "See @fig-hidden and @fig-shown.");
+        let source = "---\nexecute:\n  include: false\n---\n\n\
+                      ```{r}\n#| label: fig-back\n#| include: true\n#| fig-cap: Back\n1\n```\n\nSee @fig-back.\n";
+        assert_has(&compose(source).markdown, "href=\"#fig-back\">Figure 1</a>");
     }
 }
