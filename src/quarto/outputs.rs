@@ -350,17 +350,26 @@ fn is_caption(n: &Node) -> bool {
 fn strip_label(text: &str) -> Option<&str> {
     let t = text.trim_start();
     // Quarto writes a no-break space between the word and the number
-    // ("Figure\u{a0}1"), as a character or as an entity.
-    let digit = t.find(|c: char| c.is_ascii_digit())?;
-    let word = &t[..digit];
-    if word.is_empty()
-        || word.len() > 40
-        || !word
-            .replace("&nbsp;", " ")
-            .replace("&#160;", " ")
-            .chars()
-            .all(|c| c.is_alphabetic() || c == ' ' || c == '\u{a0}' || c == '.')
-    {
+    // ("Figure\u{a0}1"), as a character or as an entity. Walk the word
+    // entity-aware so the digits inside `&#160;` are never the figure number.
+    let mut digit = 0;
+    while digit < t.len() {
+        let tail = &t[digit..];
+        let entity = ["&nbsp;", "&#160;", "&#xa0;", "&#xA0;"]
+            .iter()
+            .find(|e| tail.starts_with(**e));
+        if let Some(e) = entity {
+            digit += e.len();
+            continue;
+        }
+        let c = tail.chars().next()?;
+        if c.is_alphabetic() || c == ' ' || c == '\u{a0}' || c == '.' {
+            digit += c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if digit == 0 || digit > 60 || !t[digit..].starts_with(|c: char| c.is_ascii_digit()) {
         return None;
     }
     let mut rest = &t[digit..];
@@ -604,6 +613,9 @@ mod tests {
         // Quarto's own spelling, with a no-break space.
         assert_eq!(strip_label(" Figure\u{a0}1: A plot "), Some("A plot "));
         assert_eq!(strip_label("Table&nbsp;1"), Some(""));
+        assert_eq!(strip_label("Figure&#160;1: A plot"), Some("A plot"));
+        assert_eq!(strip_label("Table&nbsp;2"), Some(""));
+        assert_eq!(strip_label("Figure&#xa0;3. Done"), Some("Done"));
     }
 
     #[test]

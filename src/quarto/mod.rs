@@ -577,6 +577,8 @@ pub fn draft(
                 if !note_markup.is_empty() {
                     out.block(&note_markup, (0, i));
                 }
+                // The HTML block ends here, so the prose after `---` is its own.
+                out.push("", None, (0, i));
             }
             i += 1;
             continue;
