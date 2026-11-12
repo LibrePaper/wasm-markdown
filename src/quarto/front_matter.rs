@@ -381,14 +381,14 @@ const MONTHS: [&str; 12] = [
     "December",
 ];
 
-/// `2026-11-12` as "12 November 2026"; any other text as written. `today`
+/// `2026-11-12` as "November 12, 2026", as Quarto writes it; any other text as written. `today`
 /// and `last-modified` mean the day the host reported, when it did.
 fn format_date(text: &str) -> String {
     let t = text.trim();
     if matches!(t, "today" | "now" | "last-modified") {
         if let Some((y, m, d)) = wasm_helpers::abi::today() {
             if (1..=12).contains(&m) {
-                return format!("{d} {} {y}", MONTHS[m as usize - 1]);
+                return format!("{} {d}, {y}", MONTHS[m as usize - 1]);
             }
         }
         return t.to_string();
@@ -400,7 +400,7 @@ fn format_date(text: &str) -> String {
                 && (1..=12).contains(&m)
                 && (1..=31).contains(&d)
             {
-                return format!("{d} {} {y}", MONTHS[m - 1]);
+                return format!("{} {d}, {y}", MONTHS[m - 1]);
             }
         }
     }
@@ -724,7 +724,7 @@ mod tests {
         assert!(d.contains(
             "<p class=\"affiliations\"><span class=\"affiliation\"><sup>1</sup> Engine Lab</span> <span class=\"affiliation\"><sup>2</sup> Society</span></p>"
         ));
-        assert!(d.contains("<p class=\"date\">12 November 2026</p>"), "{d}");
+        assert!(d.contains("<p class=\"date\">November 12, 2026</p>"), "{d}");
         assert!(d.contains(
             "<p class=\"keywords\"><span class=\"keywords-label\">Keywords:</span> a, b</p>"
         ));
@@ -735,12 +735,12 @@ mod tests {
 
     #[test]
     fn dates_are_formatted_or_left_as_written() {
-        assert_eq!(format_date("2026-01-05"), "5 January 2026");
+        assert_eq!(format_date("2026-01-05"), "January 5, 2026");
         assert_eq!(format_date("Spring 2026"), "Spring 2026");
         assert_eq!(format_date("2026-13-05"), "2026-13-05");
         wasm_helpers::abi::set_today(2027, 3, 9);
-        assert_eq!(format_date("today"), "9 March 2027");
-        assert_eq!(format_date("last-modified"), "9 March 2027");
+        assert_eq!(format_date("today"), "March 9, 2027");
+        assert_eq!(format_date("last-modified"), "March 9, 2027");
     }
 
     #[test]
