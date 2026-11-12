@@ -441,7 +441,8 @@ mod tests {
     fn format_html_options_win_and_other_formats_are_ignored() {
         let d = compose("---\nformat:\n  html:\n    code-fold: false\n  pdf:\n    code-fold: true\n---\n\n```{r}\nx()\n```\n").markdown;
         assert!(!d.contains("<details"), "{d}");
-        let d = compose("---\nformat:\n  pdf:\n    code-fold: true\n---\n\n```{r}\nx()\n```\n").markdown;
+        let d = compose("---\nformat:\n  pdf:\n    code-fold: true\n---\n\n```{r}\nx()\n```\n")
+            .markdown;
         assert!(!d.contains("<details"), "{d}");
     }
 
