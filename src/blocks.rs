@@ -177,7 +177,7 @@ mod tests {
         let source = "# Model\n\nA paragraph.\n\n- one\n- two\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n```rust\nfn main() {}\n```\n";
         let blocks = run(source, "paper.md", &no_files);
         assert_eq!(lines(&blocks), [(1, 1), (3, 3), (5, 6), (8, 10), (12, 14)]);
-        assert!(blocks[0].html.starts_with("<h1>") && blocks[0].html.contains("id=\"model\""), "{}", blocks[0].html);
+        assert!(blocks[0].html.starts_with("<h1") && blocks[0].html.contains("id=\"model\""), "{}", blocks[0].html);
         assert!(blocks[1].html.starts_with("<p>A paragraph.</p>"));
         assert!(blocks[2].html.starts_with("<ul>") && blocks[2].html.contains("<li>two</li>"));
         assert!(blocks[3].html.starts_with("<table>"));
