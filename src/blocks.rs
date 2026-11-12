@@ -265,7 +265,7 @@ mod tests {
         assert!(
             blocks[1]
                 .html
-                .contains("<a class=\"quarto-crossref\" href=\"#fig-x\">Figure 1</a>"),
+                .contains("<a class=\"quarto-crossref crossref\" href=\"#fig-x\">Figure 1</a>"),
             "{}",
             blocks[1].html
         );

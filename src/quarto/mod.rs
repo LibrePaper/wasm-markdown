@@ -466,7 +466,7 @@ pub(crate) fn verbatim_fence(text: &str) -> String {
 /// The HTML line that opens or closes a div: the cross-reference hook for a
 /// labelled div, then the generic one.
 fn div_html(div: &Div, ctx: &mut Context, opening: bool) -> Option<String> {
-    let labelled = if refs::has_prefix(&div.id) {
+    let labelled = if refs::wants(div) {
         if opening {
             refs::div_open(div, ctx)
         } else {
@@ -506,7 +506,7 @@ pub fn draft(
         Some(Yaml::Map(m)) => m.clone(),
         _ => Vec::new(),
     };
-    let references = refs::references(&parsed);
+    let references = refs::references(&parsed, &lines);
     let mut ctx = Context {
         path,
         meta: &parsed.fm.meta,
@@ -572,6 +572,9 @@ pub fn draft(
                 if !header.is_empty() {
                     out.push(&header, None, (0, i));
                 }
+                if let Some(contents) = refs::toc(&ctx) {
+                    out.block(&contents, (0, i));
+                }
                 if !note_markup.is_empty() {
                     out.block(&note_markup, (0, i));
                 }
@@ -603,6 +606,11 @@ pub fn draft(
                     out.block(&html, (div.start, i));
                 }
                 open_divs.pop();
+            } else if let Some(taken) = refs::line(i, &lines, &mut ctx, &mut out) {
+                // A figure image, a table with its caption, a labelled
+                // equation, a moved caption or a theorem's first line.
+                i += taken;
+                continue;
             } else if divs::div_fence(line).is_some() {
                 out.push(line, mapped, (i, i));
             } else if shortcodes::has_unsupported_shortcode(line) {
@@ -621,7 +629,7 @@ pub fn draft(
                 };
                 let mut expanded = shortcodes::expand_line(line, &mut ctx, &site);
                 if refs::is_heading(&expanded) {
-                    if let Some(decorated) = refs::decorate_heading(&expanded, &mut ctx) {
+                    if let Some(decorated) = refs::decorate_heading(&expanded, i, &mut ctx) {
                         expanded = decorated;
                     }
                 }

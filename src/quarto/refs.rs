@@ -1,16 +1,23 @@
 //! Cross-references: numbering, resolution, heading ids.
 //!
-//! Owner: r857. [`references`] numbers every labelled target in document
-//! order, [`crossrefs`] turns `@fig-x` into a link, and the hooks below let
-//! the owner wrap a labelled div ([`div_open`], [`div_close`]) and decorate a
-//! heading ([`decorate_heading`]) without touching the driver.
+//! Owner: r857. [`references`] is the pre-pass: it numbers every target in
+//! document order (figures, tables, equations, theorems, listings, sections),
+//! works out section numbers, captions and the table of contents, and keeps
+//! all of it in [`Refs`]. [`crossrefs`] turns `@fig-x` into a link. The hooks
+//! let this module write a labelled div ([`div_open`], [`div_close`]), a
+//! heading ([`decorate_heading`]), a line-level construct ([`line`]: figure
+//! images, table captions, labelled equations) and the contents ([`toc`])
+//! without the driver knowing about any of them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
 use crate::page::escape;
 
-use super::divs::Div;
-use super::{Context, Parsed};
+use super::attrs::parse_attributes;
+use super::divs::{self, Div};
+use super::front_matter::{get, Map, Yaml};
+use super::{fence_closes, fence_open, prose, Context, Out, Parsed};
 
 /// `## Heading {#sec-id}` gives the id.
 pub(crate) fn heading_id(line: &str) -> Option<String> {
@@ -43,46 +50,977 @@ pub(crate) fn heading_id(line: &str) -> Option<String> {
 
 // ------------------------------------------------------------- references
 
-pub(crate) type Refs = HashMap<String, (&'static str, usize)>;
+/// Id prefixes of numbered targets: figures, tables, sections, equations,
+/// listings and the theorem family.
+const PREFIXES: [&str; 15] = [
+    "fig", "tbl", "sec", "eq", "lst", "thm", "lem", "cor", "prp", "cnj", "def", "exm", "exr",
+    "sol", "rem",
+];
 
-const KINDS: [&str; 5] = ["fig", "tbl", "sec", "eq", "lst"];
+/// The theorem family: numbered per kind, rendered as `div.theorem`.
+const THEOREMS: [&str; 10] = [
+    "thm", "lem", "cor", "prp", "cnj", "def", "exm", "exr", "sol", "rem",
+];
 
-fn reference_kind(id: &str) -> Option<&'static str> {
-    KINDS
+fn prefix_kind(id: &str) -> Option<&'static str> {
+    PREFIXES
         .into_iter()
         .find(|k| id.strip_prefix(k).is_some_and(|rest| rest.starts_with('-')))
 }
 
-fn noun(kind: &str) -> &'static str {
+/// Whether a div id starts with a cross-reference prefix (`fig-`, `thm-`...).
+pub(crate) fn has_prefix(id: &str) -> bool {
+    prefix_kind(id).is_some()
+}
+
+fn default_word(kind: &str) -> &'static str {
     match kind {
         "fig" => "Figure",
         "tbl" => "Table",
         "sec" => "Section",
         "eq" => "Equation",
-        _ => "Listing",
+        "lst" => "Listing",
+        "thm" => "Theorem",
+        "lem" => "Lemma",
+        "cor" => "Corollary",
+        "prp" => "Proposition",
+        "cnj" => "Conjecture",
+        "def" => "Definition",
+        "exm" => "Example",
+        "exr" => "Exercise",
+        "sol" => "Solution",
+        "rem" => "Remark",
+        "proof" => "Proof",
+        _ => "",
     }
 }
 
-/// Every labelled target, numbered by kind in document order.
-pub(crate) fn references(parsed: &Parsed) -> Refs {
-    let mut targets: Vec<(usize, &str)> = Vec::new();
-    targets.extend(parsed.headings.iter().map(|(l, id)| (*l, id.as_str())));
-    targets.extend(parsed.divs.iter().map(|d| (d.start, d.id.as_str())));
-    targets.extend(parsed.cells.iter().map(|c| (c.start, c.label.as_str())));
-    targets.retain(|&(_, id)| reference_kind(id).is_some());
-    targets.sort_by_key(|&(line, _)| line);
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    let mut out = Refs::new();
-    for (_, id) in targets {
-        if out.contains_key(id) {
-            continue;
+/// The words of the `crossref:` front matter key: `fig-prefix` in a
+/// reference, `fig-title` in a caption label, `title-delim` after it.
+#[derive(Default)]
+struct Words(Map);
+
+impl Words {
+    fn new(meta: &Map) -> Words {
+        match get(meta, "crossref") {
+            Some(Yaml::Map(m)) => Words(m.clone()),
+            _ => Words(Vec::new()),
         }
-        let kind = reference_kind(id).unwrap_or("fig");
-        let number = counts.entry(kind).or_insert(0);
-        *number += 1;
-        out.insert(id.to_string(), (kind, *number));
+    }
+
+    fn lookup(&self, key: &str) -> Option<String> {
+        get(&self.0, key).map(Yaml::text)
+    }
+
+    fn title(&self, kind: &str) -> String {
+        self.lookup(&format!("{kind}-title"))
+            .unwrap_or_else(|| default_word(kind).to_string())
+    }
+
+    fn prefix(&self, kind: &str) -> String {
+        self.lookup(&format!("{kind}-prefix"))
+            .unwrap_or_else(|| default_word(kind).to_string())
+    }
+
+    fn delimiter(&self) -> String {
+        self.lookup("title-delim")
+            .unwrap_or_else(|| ".".to_string())
+    }
+}
+
+/// A numbered target: `1`, `2.1` (a section), `A.1` (an appendix section) or
+/// `1b` (a subfigure).
+struct Target {
+    kind: &'static str,
+    number: String,
+}
+
+struct Heading {
+    /// The line as the source has it; a decoration applies only to that.
+    raw: String,
+    level: usize,
+    title: String,
+    id: String,
+    number: Option<String>,
+    decorate: bool,
+}
+
+/// What a div needs at its fences: the caption it gave up, a theorem's name
+/// and where its label goes.
+#[derive(Default)]
+struct DivInfo {
+    id: String,
+    kind: &'static str,
+    name: String,
+    caption: String,
+    /// The first line of content, when the label can start it.
+    inline_line: Option<usize>,
+}
+
+struct Image {
+    id: String,
+    src: String,
+    alt: String,
+    fig_alt: String,
+    width: String,
+    height: String,
+    align: String,
+}
+
+enum Item {
+    Image(Image),
+    Equation {
+        id: String,
+        tex: String,
+    },
+    /// A pipe table with its caption line, before or after it.
+    Table {
+        id: String,
+        caption: String,
+        rows: Range<usize>,
+    },
+}
+
+/// A construct of one or more lines, found at its first line.
+struct Span {
+    item: Item,
+    /// The last line it covers.
+    end: usize,
+}
+
+/// Everything the pre-pass found: the numbered targets, section numbers,
+/// captions and the contents. Read-only while the draft is written.
+#[derive(Default)]
+pub(crate) struct Refs {
+    targets: HashMap<String, Target>,
+    words: Words,
+    /// By line.
+    headings: HashMap<usize, Heading>,
+    /// By the line of the opening fence.
+    divs: HashMap<usize, DivInfo>,
+    /// By the first line.
+    items: HashMap<usize, Span>,
+    /// Lines that moved elsewhere: captions, theorem names.
+    skip: HashSet<usize>,
+    /// First content line of a div -> the line of its opening fence.
+    inline: HashMap<usize, usize>,
+    /// Subfigure id -> `a`, `b`...
+    letters: HashMap<String, char>,
+    toc: String,
+}
+
+impl Refs {
+    /// `Figure 1`: what a reference to `id` says.
+    fn reference_text(&self, id: &str) -> Option<String> {
+        let target = self.targets.get(id)?;
+        let prefix = self.words.prefix(target.kind);
+        Some(if prefix.is_empty() {
+            target.number.clone()
+        } else {
+            format!("{prefix} {}", target.number)
+        })
+    }
+
+    /// `Figure 1.` or `(a)`: what a caption starts with.
+    pub(crate) fn caption_label(&self, id: &str) -> String {
+        if let Some(letter) = self.letters.get(id) {
+            return format!("({letter})");
+        }
+        let delimiter = self.words.delimiter();
+        match self.targets.get(id) {
+            Some(t) => format!("{} {}{delimiter}", self.words.title(t.kind), t.number),
+            None => format!(
+                "{}{delimiter}",
+                self.words.title(prefix_kind(id).unwrap_or("fig"))
+            ),
+        }
+    }
+
+    /// `Theorem 1 (Name).` as spans, or `Proof.`.
+    fn div_label(&self, info: &DivInfo) -> String {
+        if info.kind == "proof" {
+            return format!(
+                "<span class=\"proof-label\">{}.</span>",
+                escape(&self.words.title("proof"))
+            );
+        }
+        let title = self.words.title(info.kind);
+        let head = match self.targets.get(&info.id) {
+            Some(t) if !info.id.is_empty() => format!("{title} {}", t.number),
+            _ => title,
+        };
+        let mut out = format!("<span class=\"theorem-label\">{}</span>", escape(&head));
+        if !info.name.is_empty() {
+            out.push_str(&format!(
+                " <span class=\"theorem-name\">({})</span>",
+                inline_html(&info.name, self)
+            ));
+        }
+        out.push('.');
+        out
+    }
+
+    fn figcaption(&self, id: &str, caption: &str) -> String {
+        let mut out = format!(
+            "<figcaption><span class=\"caption-label\">{}</span>",
+            escape(&self.caption_label(id))
+        );
+        if !caption.is_empty() {
+            out.push(' ');
+            out.push_str(&inline_html(caption, self));
+        }
+        out.push_str("</figcaption>");
+        out
+    }
+
+    fn image_html(&self, img: &Image) -> String {
+        let class = if self.letters.contains_key(&img.id) {
+            "subfigure"
+        } else {
+            "figure"
+        };
+        let alt = if img.fig_alt.is_empty() {
+            plain(&img.alt)
+        } else {
+            img.fig_alt.clone()
+        };
+        let mut style = Vec::new();
+        if !img.width.is_empty() {
+            style.push(format!("width:{}", img.width));
+        }
+        if !img.height.is_empty() {
+            style.push(format!("height:{}", img.height));
+        }
+        match img.align.as_str() {
+            "center" => style.push("display:block;margin-left:auto;margin-right:auto".into()),
+            "right" => style.push("display:block;margin-left:auto".into()),
+            "left" => style.push("display:block;margin-right:auto".into()),
+            _ => {}
+        }
+        let style = if style.is_empty() {
+            String::new()
+        } else {
+            format!(" style=\"{}\"", escape(&style.join(";")))
+        };
+        format!(
+            "<figure class=\"{class}\" id=\"{id}\"><img src=\"{src}\" alt=\"{alt}\"{style}>{caption}</figure>",
+            id = escape(&img.id),
+            src = escape(&img.src),
+            alt = escape(&alt),
+            caption = self.figcaption(&img.id, &img.alt),
+        )
+    }
+
+    fn equation_html(&self, id: &str, tex: &str) -> String {
+        let number = self.targets.get(id).map_or("", |t| t.number.as_str());
+        format!(
+            "<div class=\"equation\" id=\"{}\"><span data-math-style=\"display\">{}</span><span class=\"equation-number\">({})</span></div>",
+            escape(id),
+            escape(tex),
+            escape(number)
+        )
+    }
+
+    fn table_open(&self, id: &str, caption: &str) -> String {
+        format!(
+            "<figure class=\"table\" id=\"{}\">\n{}",
+            escape(id),
+            self.figcaption(id, caption)
+        )
+    }
+}
+
+/// One paragraph of Markdown as inline HTML, cross references resolved.
+fn inline_html(text: &str, refs: &Refs) -> String {
+    let html = crate::markdown::render_body(&crossrefs(text, refs));
+    let html = html.trim();
+    let html = html
+        .strip_prefix("<p>")
+        .and_then(|h| h.strip_suffix("</p>"))
+        .unwrap_or(html);
+    html.replace("\n\n", "\n")
+}
+
+/// The text of some inline Markdown, the way comrak collects it for a
+/// heading id or an `alt`.
+fn plain(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '*' | '`' | '\\' | '[' => i += 1,
+            ']' => {
+                i += 1;
+                if chars.get(i) == Some(&'(') {
+                    while i < chars.len() && chars[i] != ')' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
     }
     out
+}
+
+/// What comrak's anchorizer is given for a heading: dashes and ellipses that
+/// "smart" punctuation turns into characters the anchorizer drops.
+fn slug_text(title: &str) -> String {
+    plain(title)
+        .replace("---", "")
+        .replace("--", "")
+        .replace("...", "")
+}
+
+// ---------------------------------------------------------------- parsing
+
+/// `Title {#id .class}`: the title and what is inside the braces.
+fn split_attrs(text: &str) -> (&str, Option<&str>) {
+    let t = text.trim_end();
+    if !t.ends_with('}') {
+        return (t, None);
+    }
+    let Some(k) = t.rfind('{') else {
+        return (t, None);
+    };
+    let (before, inner) = (&t[..k], t[k + 1..t.len() - 1].trim());
+    let looks_like_attributes =
+        inner.starts_with(|c: char| matches!(c, '#' | '.' | '-')) || inner.contains('=');
+    if !looks_like_attributes || !(before.is_empty() || before.ends_with(char::is_whitespace)) {
+        return (t, None);
+    }
+    (before.trim_end(), Some(inner))
+}
+
+struct HeadingLine {
+    level: usize,
+    title: String,
+    id: String,
+    classes: Vec<String>,
+    unnumbered: bool,
+    has_attrs: bool,
+}
+
+fn parse_heading(line: &str) -> Option<HeadingLine> {
+    if !is_heading(line) {
+        return None;
+    }
+    let t = line.trim_start_matches(' ');
+    let level = t.bytes().take_while(|&b| b == b'#').count();
+    let (title, attrs) = split_attrs(t[level..].trim());
+    let mut out = HeadingLine {
+        level,
+        title: title.to_string(),
+        id: String::new(),
+        classes: Vec::new(),
+        unnumbered: false,
+        has_attrs: false,
+    };
+    if let Some(inner) = attrs {
+        let parsed = parse_attributes(inner);
+        out.unnumbered = parsed.classes.iter().any(|c| c == "unnumbered")
+            || inner.split_whitespace().any(|w| w == "-");
+        out.id = parsed.id;
+        out.classes = parsed.classes;
+        out.has_attrs = true;
+    }
+    Some(out)
+}
+
+/// Lines outside the front matter and outside code fences.
+fn live_lines(lines: &[&str], front: usize) -> Vec<bool> {
+    let mut live = vec![false; lines.len()];
+    let mut i = front;
+    while i < lines.len() {
+        if let Some((ch, len, _)) = fence_open(lines[i]) {
+            i += 1;
+            while i < lines.len() && !fence_closes(lines[i], ch, len) {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        live[i] = true;
+        i += 1;
+    }
+    live
+}
+
+/// Whether a line starts a paragraph that is plain text (not a list, a
+/// quote, a table, HTML, a fence, an image...).
+fn is_plain_paragraph(line: &str) -> bool {
+    let t = line.trim();
+    let lead = line.len() - line.trim_start_matches(' ').len();
+    if t.is_empty() || lead > 3 || t.contains("{{<") {
+        return false;
+    }
+    let digits = t.bytes().take_while(|b| b.is_ascii_digit()).count();
+    let ordered = digits > 0
+        && matches!(t.as_bytes().get(digits).copied(), Some(b'.' | b')'))
+        && t[digits + 1..].chars().next().is_none_or(char::is_whitespace);
+    let first = t.chars().next().unwrap_or(' ');
+    !(ordered
+        || matches!(first, '#' | '>' | '|' | '<' | '-' | '+' | ':' | '=')
+        || (first == '*' && (t[1..].starts_with(' ') || t.starts_with("***")))
+        || (first == '_' && t.starts_with("___"))
+        || t.starts_with("```")
+        || t.starts_with("~~~")
+        || t.starts_with("$$")
+        || t.starts_with("![")
+        || t.starts_with("[^"))
+}
+
+/// The last paragraph of a div's content: its text and its lines.
+fn last_paragraph(
+    lines: &[&str],
+    live: &[bool],
+    content: &Range<usize>,
+) -> Option<(String, Range<usize>)> {
+    let mut end = content.end;
+    while end > content.start && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > content.start && !lines[start - 1].trim().is_empty() {
+        start -= 1;
+    }
+    if start == end || !is_plain_paragraph(lines[start]) {
+        return None;
+    }
+    if (start..end).any(|l| !live[l] || divs::div_fence(lines[l]).is_some()) {
+        return None;
+    }
+    let text: Vec<&str> = lines[start..end].iter().map(|l| l.trim()).collect();
+    Some((text.join("\n"), start..end))
+}
+
+fn css_length(value: String) -> String {
+    if !value.is_empty() && value.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        format!("{value}px")
+    } else {
+        value
+    }
+}
+
+/// `![Caption](path){#fig-x width=50%}` alone on a line.
+fn parse_image(line: &str) -> Option<Image> {
+    let rest = line.trim().strip_prefix("![")?;
+    let mut depth = 0usize;
+    let mut close = None;
+    for (k, c) in rest.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                if depth == 0 {
+                    close = Some(k);
+                    break;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    let close = close?;
+    let alt = &rest[..close];
+    let after = rest[close + 1..].strip_prefix('(')?;
+    let mut depth = 0usize;
+    let mut end = None;
+    for (k, c) in after.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    end = Some(k);
+                    break;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    let end = end?;
+    let mut destination = after[..end].trim();
+    let tail = after[end + 1..].trim();
+    if !tail.starts_with('{') || !tail.ends_with('}') {
+        return None;
+    }
+    let attrs = parse_attributes(tail);
+    if prefix_kind(&attrs.id) != Some("fig") {
+        return None;
+    }
+    if destination.ends_with('"') {
+        if let Some(k) = destination.rfind(" \"") {
+            destination = destination[..k].trim_end();
+        }
+    }
+    let destination = destination
+        .strip_prefix('<')
+        .and_then(|d| d.strip_suffix('>'))
+        .unwrap_or(destination);
+    let text = |key: &str| get(&attrs.attrs, key).map(Yaml::text).unwrap_or_default();
+    Some(Image {
+        id: attrs.id.clone(),
+        src: destination.to_string(),
+        alt: alt.to_string(),
+        fig_alt: text("fig-alt"),
+        width: css_length(text("width")),
+        height: css_length(text("height")),
+        align: text("fig-align"),
+    })
+}
+
+/// `{#eq-x}` after the closing `$$`.
+fn equation_label(rest: &str) -> Option<String> {
+    let rest = rest.trim();
+    if !rest.starts_with('{') || !rest.ends_with('}') {
+        return None;
+    }
+    let attrs = parse_attributes(rest);
+    (prefix_kind(&attrs.id) == Some("eq")).then_some(attrs.id)
+}
+
+/// A labelled display equation starting on line `i`: its id, its TeX and the
+/// line it ends on.
+fn parse_equation(lines: &[&str], live: &[bool], i: usize) -> Option<(String, String, usize)> {
+    let body = lines[i].trim().strip_prefix("$$")?;
+    if let Some(close) = body.find("$$") {
+        let id = equation_label(&body[close + 2..])?;
+        return Some((id, body[..close].trim().to_string(), i));
+    }
+    let mut tex = vec![body.trim().to_string()];
+    for j in i + 1..lines.len().min(i + 200) {
+        let t = lines[j].trim();
+        if !live[j] || t.is_empty() {
+            return None;
+        }
+        if let Some(close) = t.find("$$") {
+            tex.push(t[..close].trim().to_string());
+            let id = equation_label(&t[close + 2..])?;
+            tex.retain(|s| !s.is_empty());
+            return Some((id, tex.join("\n"), j));
+        }
+        tex.push(t.to_string());
+    }
+    None
+}
+
+/// `: Caption {#tbl-x}`: the id and the caption.
+fn parse_table_caption(line: &str) -> Option<(String, String)> {
+    let rest = line.trim().strip_prefix(':')?;
+    if !rest.starts_with(' ') {
+        return None;
+    }
+    let rest = rest.trim();
+    let k = rest.rfind('{')?;
+    if !rest.ends_with('}') {
+        return None;
+    }
+    let attrs = parse_attributes(&rest[k..]);
+    (prefix_kind(&attrs.id) == Some("tbl")).then(|| (attrs.id, rest[..k].trim().to_string()))
+}
+
+fn is_row(line: &str) -> bool {
+    let t = line.trim();
+    !t.is_empty() && t.contains('|')
+}
+
+fn is_delimiter(line: &str) -> bool {
+    let t = line.trim();
+    t.contains('-') && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
+}
+
+fn table_ok(lines: &[&str], rows: Range<usize>) -> Option<Range<usize>> {
+    (rows.len() >= 2 && is_delimiter(lines[rows.start + 1])).then_some(rows)
+}
+
+/// The pipe table just above a caption line (one blank line may part them).
+fn table_above(lines: &[&str], live: &[bool], caption: usize) -> Option<Range<usize>> {
+    let mut last = caption.checked_sub(1)?;
+    if lines[last].trim().is_empty() {
+        last = last.checked_sub(1)?;
+    }
+    if !(live[last] && is_row(lines[last])) {
+        return None;
+    }
+    let mut start = last;
+    while start > 0 && live[start - 1] && is_row(lines[start - 1]) {
+        start -= 1;
+    }
+    table_ok(lines, start..last + 1)
+}
+
+/// The pipe table just below a caption line.
+fn table_below(lines: &[&str], live: &[bool], caption: usize) -> Option<Range<usize>> {
+    let mut first = caption + 1;
+    if first < lines.len() && lines[first].trim().is_empty() {
+        first += 1;
+    }
+    if first >= lines.len() || !live[first] || !is_row(lines[first]) {
+        return None;
+    }
+    let mut end = first;
+    while end < lines.len() && live[end] && is_row(lines[end]) {
+        end += 1;
+    }
+    table_ok(lines, first..end)
+}
+
+fn class_kind(div: &Div) -> Option<&'static str> {
+    div.classes.iter().find_map(|c| match c.as_str() {
+        "proof" => Some("proof"),
+        "remark" => Some("rem"),
+        "solution" => Some("sol"),
+        _ => None,
+    })
+}
+
+fn is_appendix(div: &Div) -> bool {
+    div.classes.iter().any(|c| c == "appendix")
+}
+
+fn letter(n: usize) -> String {
+    char::from(b'A' + (n.max(1) - 1) as u8 % 26).to_string()
+}
+
+/// The contents: a nested list of links to the headings.
+fn build_toc(items: &[(usize, String, Option<String>, String)], title: &str) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let mut out = format!(
+        "<nav class=\"toc\"><p class=\"toc-title\">{}</p>",
+        escape(title)
+    );
+    let mut open: Vec<usize> = Vec::new();
+    for (depth, link, number, text) in items {
+        match open.last().copied() {
+            None => {
+                out.push_str("<ol>");
+                open.push(*depth);
+            }
+            Some(last) if *depth > last => {
+                out.push_str("<ol>");
+                open.push(*depth);
+            }
+            Some(_) => {
+                out.push_str("</li>");
+                while open.len() > 1 && open.last().is_some_and(|&l| *depth < l) {
+                    out.push_str("</ol></li>");
+                    open.pop();
+                }
+            }
+        }
+        out.push_str(&format!("<li><a href=\"#{}\">", escape(link)));
+        if let Some(n) = number {
+            out.push_str(&format!(
+                "<span class=\"section-number\">{}</span> ",
+                escape(n)
+            ));
+        }
+        out.push_str(&escape(text));
+        out.push_str("</a>");
+    }
+    out.push_str("</li>");
+    while open.len() > 1 {
+        out.push_str("</ol></li>");
+        open.pop();
+    }
+    out.push_str("</ol></nav>");
+    out
+}
+
+/// Every numbered target of the document, in document order by kind, with
+/// section numbers, captions and the contents worked out.
+pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
+    let meta = &parsed.fm.meta;
+    let live = live_lines(lines, parsed.fm.lines);
+    let mut refs = Refs {
+        words: Words::new(meta),
+        ..Refs::default()
+    };
+    // (line, id) of everything that takes a number.
+    let mut cands: Vec<(usize, String)> = Vec::new();
+    // Subfigures: (line, id, index of the figure div they belong to).
+    let mut subs: Vec<(usize, String, usize)> = Vec::new();
+    let innermost = |line: usize| -> Option<usize> {
+        parsed
+            .divs
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.content.contains(&line))
+            .max_by_key(|(_, d)| d.depth)
+            .map(|(n, _)| n)
+    };
+
+    // Divs: captions move to the figcaption, names to the label.
+    for d in &parsed.divs {
+        let pk = prefix_kind(&d.id);
+        if pk.is_some() {
+            let parent = d
+                .parent
+                .filter(|&p| pk == Some("fig") && prefix_kind(&parsed.divs[p].id) == Some("fig"));
+            match parent {
+                Some(p) => subs.push((d.start, d.id.clone(), p)),
+                None => cands.push((d.start, d.id.clone())),
+            }
+        }
+        let kind = match pk {
+            Some(k) if k == "fig" || k == "tbl" || THEOREMS.contains(&k) => Some(k),
+            Some(_) => None,
+            None => class_kind(d),
+        };
+        let Some(kind) = kind else { continue };
+        let mut info = DivInfo {
+            id: d.id.clone(),
+            kind,
+            ..DivInfo::default()
+        };
+        if kind == "fig" || kind == "tbl" {
+            if let Some((text, range)) = last_paragraph(lines, &live, &d.content) {
+                info.caption = text;
+                refs.skip.extend(range);
+            }
+        } else {
+            let mut from = d.content.start;
+            while from < d.content.end && lines[from].trim().is_empty() {
+                from += 1;
+            }
+            if from < d.content.end && live[from] {
+                if let Some(h) = parse_heading(lines[from]) {
+                    info.name = h.title;
+                    refs.skip.insert(from);
+                    from += 1;
+                }
+            }
+            if let Some(name) = get(&d.attrs, "name") {
+                info.name = name.text();
+            }
+            while from < d.content.end && lines[from].trim().is_empty() {
+                from += 1;
+            }
+            if from < d.content.end && live[from] && is_plain_paragraph(lines[from]) {
+                info.inline_line = Some(from);
+                refs.inline.insert(from, d.start);
+            }
+        }
+        refs.divs.insert(d.start, info);
+    }
+
+    // Headings: section numbers, anchors, the contents.
+    let number_sections = get(meta, "number-sections").is_some_and(|y| y.truthy());
+    let depth_limit = match get(meta, "number-depth") {
+        Some(Yaml::Num(n)) if *n >= 1.0 => *n as usize,
+        _ => usize::MAX,
+    };
+    let toc_on = get(meta, "toc").is_some_and(|y| y.truthy());
+    let toc_depth = match get(meta, "toc-depth") {
+        Some(Yaml::Num(n)) if *n >= 1.0 => *n as usize,
+        _ => 3,
+    };
+    let toc_title = match get(meta, "toc-title") {
+        Some(y) if y.truthy() => y.text(),
+        _ => "Contents".to_string(),
+    };
+    let headings: Vec<(usize, HeadingLine)> = (0..lines.len())
+        .filter(|&i| live[i] && !refs.skip.contains(&i))
+        .filter_map(|i| parse_heading(lines[i]).map(|h| (i, h)))
+        .collect();
+    let base = headings.iter().map(|(_, h)| h.level).min().unwrap_or(1);
+    let appendix_divs: Vec<(usize, Range<usize>)> = parsed
+        .divs
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| is_appendix(d))
+        .map(|(n, d)| (n, d.content.clone()))
+        .collect();
+    let appendix_from = headings
+        .iter()
+        .find(|(_, h)| h.classes.iter().any(|c| c == "appendix"))
+        .map(|(line, _)| *line);
+    let region_of = |line: usize| -> Option<usize> {
+        appendix_divs
+            .iter()
+            .find(|(_, range)| range.contains(&line))
+            .map(|(n, _)| *n)
+            .or_else(|| appendix_from.filter(|&from| line >= from).map(|_| usize::MAX))
+    };
+    let mut counters = [0usize; 6];
+    let mut region: Option<usize> = None;
+    let mut appendix_level = base;
+    let mut anchorizer = comrak::Anchorizer::new();
+    let mut section_numbers: HashMap<String, String> = HashMap::new();
+    let mut toc_items: Vec<(usize, String, Option<String>, String)> = Vec::new();
+    for (line, h) in &headings {
+        let key = region_of(*line);
+        if key != region {
+            region = key;
+            counters = [0; 6];
+            appendix_level = h.level;
+        }
+        let appendix = key.is_some();
+        let anchor = anchorizer.anchorize(&slug_text(&h.title));
+        let depth = h.level.saturating_sub(if appendix { appendix_level } else { base }) + 1;
+        let number = if number_sections && !h.unnumbered && depth <= depth_limit {
+            counters[depth - 1] += 1;
+            for c in counters.iter_mut().skip(depth) {
+                *c = 0;
+            }
+            for c in counters.iter_mut().take(depth - 1) {
+                if *c == 0 {
+                    *c = 1;
+                }
+            }
+            let parts: Vec<String> = counters[..depth]
+                .iter()
+                .enumerate()
+                .map(|(k, &c)| {
+                    if k == 0 && appendix {
+                        letter(c)
+                    } else {
+                        c.to_string()
+                    }
+                })
+                .collect();
+            Some(parts.join("."))
+        } else {
+            None
+        };
+        if !h.id.is_empty() {
+            cands.push((*line, h.id.clone()));
+            if let Some(n) = &number {
+                section_numbers.insert(h.id.clone(), n.clone());
+            }
+        }
+        let toc_depth_of = h.level.saturating_sub(base) + 1;
+        if toc_on && toc_depth_of <= toc_depth && !h.classes.iter().any(|c| c == "unlisted") {
+            let link = if h.id.is_empty() {
+                anchor
+            } else {
+                h.id.clone()
+            };
+            toc_items.push((toc_depth_of, link, number.clone(), plain(&h.title)));
+        }
+        refs.headings.insert(
+            *line,
+            Heading {
+                raw: lines[*line].to_string(),
+                level: h.level,
+                title: h.title.clone(),
+                id: h.id.clone(),
+                decorate: h.has_attrs || number.is_some(),
+                number,
+            },
+        );
+    }
+    refs.toc = build_toc(&toc_items, &toc_title);
+
+    // Table captions, then figure images and equations.
+    let mut taken: HashSet<usize> = HashSet::new();
+    for c in 0..lines.len() {
+        if !live[c] || taken.contains(&c) {
+            continue;
+        }
+        let Some((id, caption)) = parse_table_caption(lines[c]) else {
+            continue;
+        };
+        let free = |rows: &Range<usize>| !rows.clone().any(|l| taken.contains(&l));
+        let rows = table_above(lines, &live, c)
+            .filter(&free)
+            .or_else(|| table_below(lines, &live, c).filter(&free));
+        let Some(rows) = rows else { continue };
+        taken.insert(c);
+        taken.extend(rows.clone());
+        let (key, end) = (c.min(rows.start), c.max(rows.end - 1));
+        cands.push((key, id.clone()));
+        refs.items.insert(
+            key,
+            Span {
+                item: Item::Table { id, caption, rows },
+                end,
+            },
+        );
+    }
+    let mut i = parsed.fm.lines;
+    while i < lines.len() {
+        if !live[i] || taken.contains(&i) {
+            i += 1;
+            continue;
+        }
+        if let Some(img) = parse_image(lines[i]) {
+            match innermost(i).filter(|&p| prefix_kind(&parsed.divs[p].id) == Some("fig")) {
+                Some(p) => subs.push((i, img.id.clone(), p)),
+                None => cands.push((i, img.id.clone())),
+            }
+            refs.items.insert(
+                i,
+                Span {
+                    item: Item::Image(img),
+                    end: i,
+                },
+            );
+        } else if let Some((id, tex, end)) = parse_equation(lines, &live, i) {
+            cands.push((i, id.clone()));
+            refs.items.insert(
+                i,
+                Span {
+                    item: Item::Equation { id, tex },
+                    end,
+                },
+            );
+            i = end;
+        }
+        i += 1;
+    }
+    cands.extend(parsed.cells.iter().map(|c| (c.start, c.label.clone())));
+
+    // Number by kind, in document order.
+    cands.retain(|(_, id)| prefix_kind(id).is_some());
+    cands.sort_by_key(|(line, _)| *line);
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for (_, id) in &cands {
+        if refs.targets.contains_key(id) {
+            continue;
+        }
+        let kind = prefix_kind(id).unwrap_or("fig");
+        let count = counts.entry(kind).or_insert(0);
+        *count += 1;
+        let ordinal = count.to_string();
+        let number = if kind == "sec" {
+            section_numbers.get(id).cloned().unwrap_or(ordinal)
+        } else {
+            ordinal
+        };
+        refs.targets.insert(id.clone(), Target { kind, number });
+    }
+    subs.sort_by_key(|(line, _, _)| *line);
+    let mut seen: HashMap<usize, u8> = HashMap::new();
+    for (_, id, parent) in subs {
+        let slot = seen.entry(parent).or_insert(0);
+        let sub_letter = char::from(b'a' + *slot % 26);
+        *slot += 1;
+        if refs.targets.contains_key(&id) {
+            continue;
+        }
+        let number = refs
+            .targets
+            .get(&parsed.divs[parent].id)
+            .map(|t| t.number.clone())
+            .unwrap_or_default();
+        refs.targets.insert(
+            id.clone(),
+            Target {
+                kind: "fig",
+                number: format!("{number}{sub_letter}"),
+            },
+        );
+        refs.letters.insert(id, sub_letter);
+    }
+    refs
 }
 
 fn label_char(b: u8) -> bool {
@@ -98,7 +1036,7 @@ pub(crate) fn crossrefs(text: &str, refs: &Refs) -> String {
     while let Some(at) = text[i..].find('@') {
         let start = i + at;
         i = start + 1;
-        let Some(kind) = KINDS.into_iter().find(|k| {
+        let Some(kind) = PREFIXES.into_iter().find(|k| {
             text[start + 1..]
                 .strip_prefix(k)
                 .is_some_and(|rest| rest.starts_with('-'))
@@ -120,13 +1058,12 @@ pub(crate) fn crossrefs(text: &str, refs: &Refs) -> String {
             }
         }
         let id = &text[start + 1..end];
-        if let Some((kind, number)) = refs.get(id) {
+        if let Some(label) = refs.reference_text(id) {
             out.push_str(&text[copied..start]);
             out.push_str(&format!(
-                "<a class=\"quarto-crossref\" href=\"#{}\">{} {}</a>",
+                "<a class=\"quarto-crossref crossref\" href=\"#{}\">{}</a>",
                 escape(id),
-                noun(kind),
-                number
+                escape(&label)
             ));
             copied = end;
         }
@@ -136,29 +1073,87 @@ pub(crate) fn crossrefs(text: &str, refs: &Refs) -> String {
     out
 }
 
-/// Id prefixes that mark a div as a numbered target: figures, tables,
-/// sections, equations, listings and the theorem family.
-const DIV_PREFIXES: [&str; 15] = [
-    "fig", "tbl", "sec", "eq", "lst", "thm", "lem", "cor", "prp", "cnj", "def", "exm", "exr",
-    "sol", "rem",
-];
+// ------------------------------------------------------------------ hooks
 
-/// Whether a div id starts with a cross-reference prefix (`fig-`, `thm-`...).
-pub(crate) fn has_prefix(id: &str) -> bool {
-    DIV_PREFIXES
-        .into_iter()
-        .any(|p| id.strip_prefix(p).is_some_and(|rest| rest.starts_with('-')))
+/// Whether a div is offered to [`div_open`]: a numbered target, a proof, a
+/// remark or solution, or an appendix.
+pub(crate) fn wants(div: &Div) -> bool {
+    has_prefix(&div.id) || class_kind(div).is_some() || is_appendix(div)
 }
 
-/// The opening HTML for a div with a cross-reference prefix, or none to let
-/// `divs::open` render it. Must answer together with [`div_close`].
-pub(crate) fn div_open(_div: &Div, _ctx: &mut Context) -> Option<String> {
-    None
+fn id_attribute(div: &Div) -> String {
+    if div.id.is_empty() {
+        String::new()
+    } else {
+        format!(" id=\"{}\"", escape(&div.id))
+    }
+}
+
+fn layout_columns(div: &Div) -> Option<usize> {
+    match get(&div.attrs, "layout-ncol")? {
+        Yaml::Num(n) if *n >= 1.0 => Some(*n as usize),
+        Yaml::Str(s) => s.trim().parse().ok().filter(|&n| n >= 1),
+        _ => None,
+    }
+}
+
+/// The opening HTML for a div that is a numbered target, a proof or an
+/// appendix, or none to let `divs::open` render it. Must answer together
+/// with [`div_close`].
+pub(crate) fn div_open(div: &Div, ctx: &mut Context) -> Option<String> {
+    let refs = ctx.refs;
+    let id = id_attribute(div);
+    if is_appendix(div) {
+        return Some(format!("<section class=\"appendix\"{id}>"));
+    }
+    let info = refs.divs.get(&div.start)?;
+    match info.kind {
+        "fig" => {
+            let mut class = if refs.letters.contains_key(&div.id) {
+                "subfigure".to_string()
+            } else {
+                "figure".to_string()
+            };
+            let mut style = String::new();
+            if let Some(cols) = layout_columns(div) {
+                class.push_str(" figure-grid");
+                style = format!(" style=\"--lp-cols:{cols}\"");
+            }
+            Some(format!("<figure class=\"{class}\"{id}{style}>"))
+        }
+        "tbl" => Some(refs.table_open(&div.id, &info.caption)),
+        "proof" => {
+            let mut html = format!("<div class=\"proof\"{id}>");
+            if info.inline_line.is_none() {
+                html.push_str(&format!("\n\n<p>{}</p>", refs.div_label(info)));
+            }
+            Some(html)
+        }
+        kind => {
+            let mut html = format!("<div class=\"theorem theorem-{kind}\"{id}>");
+            if info.inline_line.is_none() {
+                html.push_str(&format!("\n\n<p>{}</p>", refs.div_label(info)));
+            }
+            Some(html)
+        }
+    }
 }
 
 /// The closing HTML that pairs with [`div_open`].
-pub(crate) fn div_close(_div: &Div, _ctx: &mut Context) -> Option<String> {
-    None
+pub(crate) fn div_close(div: &Div, ctx: &mut Context) -> Option<String> {
+    let refs = ctx.refs;
+    if is_appendix(div) {
+        return Some("</section>".to_string());
+    }
+    let info = refs.divs.get(&div.start)?;
+    match info.kind {
+        "fig" => Some(format!(
+            "{}</figure>",
+            refs.figcaption(&div.id, &info.caption)
+        )),
+        "tbl" => Some("</figure>".to_string()),
+        _ => Some("</div>".to_string()),
+    }
 }
 
 /// Whether a line is an ATX heading (`#` to `######` and a space or nothing).
@@ -171,16 +1166,79 @@ pub(crate) fn is_heading(line: &str) -> bool {
     (1..=6).contains(&hashes) && t[hashes..].chars().next().is_none_or(char::is_whitespace)
 }
 
-/// The replacement for a heading line (section numbers, anchors), or none to
-/// leave it. Called for each heading line of the main text, before
-/// references are resolved in it.
-pub(crate) fn decorate_heading(_line: &str, _ctx: &mut Context) -> Option<String> {
-    None
+/// The replacement for heading line `index` (section number, anchor for its
+/// `{#id}`, attributes removed), or none to leave it. Called for each heading
+/// line of the main text, before references are resolved in it.
+pub(crate) fn decorate_heading(line: &str, index: usize, ctx: &mut Context) -> Option<String> {
+    let h = ctx.refs.headings.get(&index)?;
+    if !h.decorate || h.raw != line {
+        return None;
+    }
+    let mut out = "#".repeat(h.level);
+    out.push(' ');
+    if !h.id.is_empty() {
+        out.push_str(&format!("<span id=\"{}\"></span>", escape(&h.id)));
+    }
+    if let Some(number) = &h.number {
+        // A no-break space: comrak's heading id ignores it, so the id is the
+        // one the title alone would have.
+        out.push_str(&format!(
+            "<span class=\"section-number\">{}</span>&nbsp;",
+            escape(number)
+        ));
+    }
+    out.push_str(&h.title);
+    Some(out)
+}
+
+/// The table of contents for `toc: true`, placed after the title block.
+pub(crate) fn toc(ctx: &Context) -> Option<String> {
+    (!ctx.refs.toc.is_empty()).then(|| ctx.refs.toc.clone())
+}
+
+/// Line-level constructs: figure images, table captions and their tables,
+/// labelled equations, the lines a caption or a name moved out of, and the
+/// first line of a theorem or proof, which carries the label. Writes into
+/// `out` and answers how many source lines it took, or none to let the
+/// driver handle line `i` (it may have written something before it).
+pub(crate) fn line(i: usize, lines: &[&str], ctx: &mut Context, out: &mut Out) -> Option<usize> {
+    let refs = ctx.refs;
+    if refs.skip.contains(&i) {
+        return Some(1);
+    }
+    if let Some(span) = refs.items.get(&i) {
+        let origin = (i, span.end);
+        match &span.item {
+            Item::Image(img) => out.block(&refs.image_html(img), origin),
+            Item::Equation { id, tex } => out.block(&refs.equation_html(id, tex), origin),
+            Item::Table { id, caption, rows } => {
+                out.block(&refs.table_open(id, caption), origin);
+                for l in rows.clone() {
+                    let text = prose(lines[l], ctx);
+                    out.push(&text, Some(l), (l, l));
+                }
+                out.block("</figure>", origin);
+            }
+        }
+        return Some(span.end + 1 - i);
+    }
+    let info = refs.divs.get(refs.inline.get(&i)?)?;
+    let text = prose(lines[i], ctx);
+    out.push(
+        &format!("{} {text}", refs.div_label(info)),
+        Some(i),
+        (i, i),
+    );
+    Some(1)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::quarto::tests::compose;
+    use crate::quarto::tests::{compose, no_files};
+
+    fn assert_has(draft: &str, expected: &str) {
+        assert!(draft.contains(expected), "missing {expected:?} in:\n{draft}");
+    }
 
     #[test]
     fn cross_references_are_numbered_in_document_order() {
@@ -189,22 +1247,209 @@ mod tests {
                       See @fig-trend and @tbl-one and @fig-nope, `@fig-trend` and [@fig-trend](x).\n\n\
                       ::: {#tbl-one}\nTable caption\n:::\n";
         let d = compose(source).markdown;
-        assert!(
-            d.contains("<div class=\"callout-note\" id=\"intro\">"),
-            "{d}"
+        assert_has(&d, "<div class=\"callout-note\" id=\"intro\">");
+        assert_has(&d, "<figure class=\"table\" id=\"tbl-one\">");
+        assert_has(
+            &d,
+            "See <a class=\"quarto-crossref crossref\" href=\"#fig-trend\">Figure 1</a>.\n",
         );
-        assert!(d.contains("<div id=\"tbl-one\">"), "{d}");
-        assert!(
-            d.contains("See <a class=\"quarto-crossref\" href=\"#fig-trend\">Figure 1</a>.\n"),
-            "a div's text is resolved too: {d}"
+        assert_has(
+            &d,
+            "<a class=\"quarto-crossref crossref\" href=\"#fig-trend\">Figure 1</a> and ",
         );
-        assert!(
-            d.contains("<a class=\"quarto-crossref\" href=\"#fig-trend\">Figure 1</a> and "),
-            "{d}"
+        assert_has(&d, "href=\"#tbl-one\">Table 1</a>");
+        assert_has(&d, "@fig-nope");
+        assert_has(&d, "`@fig-trend`");
+        assert_has(&d, "[@fig-trend](x)");
+    }
+
+    #[test]
+    fn a_figure_div_takes_its_caption_from_the_last_paragraph() {
+        let d = compose("::: {#fig-a}\n![](a.png)\n\nA *nice* plot\n:::\n\nSee @fig-a.\n").markdown;
+        assert_has(&d, "<figure class=\"figure\" id=\"fig-a\">");
+        assert_has(&d, "![](a.png)");
+        assert_has(
+            &d,
+            "<figcaption><span class=\"caption-label\">Figure 1.</span> A <em>nice</em> plot</figcaption></figure>",
         );
-        assert!(d.contains("href=\"#tbl-one\">Table 1</a>"), "{d}");
-        assert!(d.contains("@fig-nope"), "unresolved stays text: {d}");
-        assert!(d.contains("`@fig-trend`"), "inline code is untouched: {d}");
-        assert!(d.contains("[@fig-trend](x)"), "links are untouched: {d}");
+        assert!(!d.contains("A *nice* plot"), "the caption moved: {d}");
+        assert_has(&d, "href=\"#fig-a\">Figure 1</a>");
+    }
+
+    #[test]
+    fn a_layout_div_is_a_grid_of_subfigures() {
+        let source = "::: {#fig-g layout-ncol=2}\n![A](a.png){#fig-ga}\n![B](b.png){#fig-gb}\n\nGrid caption\n:::\n\nSee @fig-gb.\n";
+        let d = compose(source).markdown;
+        assert_has(
+            &d,
+            "<figure class=\"figure figure-grid\" id=\"fig-g\" style=\"--lp-cols:2\">",
+        );
+        assert_has(
+            &d,
+            "<figure class=\"subfigure\" id=\"fig-ga\"><img src=\"a.png\" alt=\"A\"><figcaption><span class=\"caption-label\">(a)</span> A</figcaption></figure>",
+        );
+        assert_has(&d, "<span class=\"caption-label\">(b)</span> B");
+        assert_has(&d, "<span class=\"caption-label\">Figure 1.</span> Grid caption");
+        assert_has(&d, "href=\"#fig-gb\">Figure 1b</a>");
+    }
+
+    #[test]
+    fn a_figure_image_keeps_its_source_and_takes_its_size() {
+        let d = compose(
+            "![Cap](p.png){#fig-i width=50% fig-align=center}\n\nSee @fig-i.\n",
+        )
+        .markdown;
+        assert_has(
+            &d,
+            "<figure class=\"figure\" id=\"fig-i\"><img src=\"p.png\" alt=\"Cap\" style=\"width:50%;display:block;margin-left:auto;margin-right:auto\"><figcaption><span class=\"caption-label\">Figure 1.</span> Cap</figcaption></figure>",
+        );
+        assert_has(&d, "href=\"#fig-i\">Figure 1</a>");
+    }
+
+    #[test]
+    fn a_table_caption_before_or_after_the_table_makes_a_table_figure() {
+        let after = compose("| a | b |\n|---|---|\n| 1 | 2 |\n\n: Results {#tbl-r}\n\nSee @tbl-r.\n")
+            .markdown;
+        assert_has(
+            &after,
+            "<figure class=\"table\" id=\"tbl-r\">\n<figcaption><span class=\"caption-label\">Table 1.</span> Results</figcaption>",
+        );
+        assert!(after.find("<figure").unwrap() < after.find("| a | b |").unwrap());
+        assert!(after.find("| 1 | 2 |").unwrap() < after.find("</figure>").unwrap());
+        assert!(!after.contains(": Results"), "{after}");
+        assert_has(&after, "href=\"#tbl-r\">Table 1</a>");
+        let before = compose(": Cap {#tbl-b}\n\n| a |\n|---|\n| 1 |\n").markdown;
+        assert_has(&before, "<span class=\"caption-label\">Table 1.</span> Cap");
+        assert!(before.find("<figure").unwrap() < before.find("| a |").unwrap());
+        assert!(before.find("| 1 |").unwrap() < before.find("</figure>").unwrap());
+    }
+
+    #[test]
+    fn a_labelled_equation_is_numbered() {
+        let source = "$$ E = mc^2 $$ {#eq-e}\n\n$$\na &= b \\\\\nc &= d\n$$ {#eq-m}\n\nSee @eq-e and @eq-m.\n";
+        let d = compose(source).markdown;
+        assert_has(
+            &d,
+            "<div class=\"equation\" id=\"eq-e\"><span data-math-style=\"display\">E = mc^2</span><span class=\"equation-number\">(1)</span></div>",
+        );
+        assert_has(
+            &d,
+            "<span data-math-style=\"display\">a &amp;= b \\\\\nc &amp;= d</span><span class=\"equation-number\">(2)</span>",
+        );
+        assert_has(&d, "href=\"#eq-m\">Equation 2</a>");
+        assert_has(&d, "href=\"#eq-e\">Equation 1</a>");
+    }
+
+    #[test]
+    fn theorems_are_labelled_per_kind_and_proofs_are_not_numbered() {
+        let source = "::: {#thm-main name=\"Main result\"}\nEvery x is y.\n:::\n\n\
+                      ::: {#lem-aux}\n## Helper\nAnother.\n:::\n\n\
+                      ::: {#thm-two}\nSecond.\n:::\n\n\
+                      ::: proof\nTrivial.\n:::\n\n\
+                      ::: {#def-x}\n- item\n:::\n\nSee @thm-two and @lem-aux.\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "<div class=\"theorem theorem-thm\" id=\"thm-main\">");
+        assert_has(
+            &d,
+            "<span class=\"theorem-label\">Theorem 1</span> <span class=\"theorem-name\">(Main result)</span>. Every x is y.",
+        );
+        assert_has(
+            &d,
+            "<span class=\"theorem-label\">Lemma 1</span> <span class=\"theorem-name\">(Helper)</span>. Another.",
+        );
+        assert!(!d.contains("## Helper"), "{d}");
+        assert_has(&d, "<span class=\"theorem-label\">Theorem 2</span>. Second.");
+        assert_has(&d, "<div class=\"proof\">");
+        assert_has(&d, "<span class=\"proof-label\">Proof.</span> Trivial.");
+        assert_has(&d, "<p><span class=\"theorem-label\">Definition 1</span>.</p>");
+        assert_has(&d, "href=\"#thm-two\">Theorem 2</a>");
+        assert_has(&d, "href=\"#lem-aux\">Lemma 1</a>");
+    }
+
+    #[test]
+    fn sections_are_numbered_and_anchored() {
+        let source = "---\ntitle: T\nnumber-sections: true\n---\n\n# Intro {#sec-intro}\n\n## Sub\n\n# Methods\n\n## Detail {.unnumbered}\n\n# Last {#sec-last}\n\nSee @sec-intro and @sec-last.\n";
+        let d = compose(source).markdown;
+        assert_has(
+            &d,
+            "\n# <span id=\"sec-intro\"></span><span class=\"section-number\">1</span>&nbsp;Intro\n",
+        );
+        assert_has(&d, "\n## <span class=\"section-number\">1.1</span>&nbsp;Sub\n");
+        assert_has(&d, "\n# <span class=\"section-number\">2</span>&nbsp;Methods\n");
+        assert_has(&d, "\n## Detail\n");
+        assert_has(
+            &d,
+            "\n# <span id=\"sec-last\"></span><span class=\"section-number\">3</span>&nbsp;Last\n",
+        );
+        assert_has(&d, "href=\"#sec-intro\">Section 1</a>");
+        assert_has(&d, "href=\"#sec-last\">Section 3</a>");
+        let html = crate::markdown::render_body(&d);
+        assert_has(&html, "id=\"intro\"");
+        assert_has(&html, "id=\"sec-intro\"");
+    }
+
+    #[test]
+    fn appendix_headings_are_lettered() {
+        let source = "---\ntitle: T\nnumber-sections: true\n---\n\n# One\n\n# Extra {.appendix}\n\n## Sub\n\n# More\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "\n# <span class=\"section-number\">1</span>&nbsp;One\n");
+        assert_has(&d, "\n# <span class=\"section-number\">A</span>&nbsp;Extra\n");
+        assert_has(&d, "\n## <span class=\"section-number\">A.1</span>&nbsp;Sub\n");
+        assert_has(&d, "\n# <span class=\"section-number\">B</span>&nbsp;More\n");
+        let wrapped = compose(
+            "---\ntitle: T\nnumber-sections: true\n---\n\n# One\n\n::: {.appendix}\n# Extra\n:::\n",
+        )
+        .markdown;
+        assert_has(&wrapped, "<section class=\"appendix\">");
+        assert_has(&wrapped, "</section>");
+        assert_has(&wrapped, "<span class=\"section-number\">A</span>&nbsp;Extra");
+    }
+
+    #[test]
+    fn the_contents_follow_the_title_block() {
+        let source = "---\ntitle: T\ntoc: true\ntoc-title: Inhalt\n---\n\n# One\n\n## Two\n\n# Three\n";
+        let d = compose(source).markdown;
+        assert_has(
+            &d,
+            "<nav class=\"toc\"><p class=\"toc-title\">Inhalt</p><ol><li><a href=\"#one\">One</a><ol><li><a href=\"#two\">Two</a></li></ol></li><li><a href=\"#three\">Three</a></li></ol></nav>",
+        );
+        assert!(d.find("</header>").unwrap() < d.find("<nav").unwrap());
+        let numbered = compose(
+            "---\ntitle: T\ntoc: true\ntoc-depth: 1\nnumber-sections: true\n---\n\n# One {#sec-one}\n\n## Two\n",
+        )
+        .markdown;
+        assert_has(
+            &numbered,
+            "<ol><li><a href=\"#sec-one\"><span class=\"section-number\">1</span> One</a></li></ol>",
+        );
+        assert!(!numbered.contains("Two</a>"), "{numbered}");
+    }
+
+    #[test]
+    fn crossref_words_come_from_the_front_matter() {
+        let source = "---\ntitle: T\ncrossref:\n  fig-prefix: Fig.\n  fig-title: Abb\n---\n\n![C](x.png){#fig-a}\n\nSee @fig-a.\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "<span class=\"caption-label\">Abb 1.</span> C");
+        assert_has(&d, "href=\"#fig-a\">Fig. 1</a>");
+    }
+
+    #[test]
+    fn a_figure_div_folds_into_one_block_with_its_caption() {
+        let blocks = crate::blocks::compile_blocks(
+            "::: {#fig-a}\n![](a.png)\n\nA nice plot\n:::\n",
+            "p.qmd",
+            &no_files,
+            &crate::markdown::no_assets,
+        );
+        let value: serde_json::Value = serde_json::from_str(&blocks.json).unwrap();
+        let list = value["blocks"].as_array().unwrap();
+        assert_eq!(list.len(), 1, "{}", blocks.json);
+        let html = list[0]["html"].as_str().unwrap();
+        assert!(html.contains("<img src=\"a.png\""), "{html}");
+        assert!(
+            html.contains("<span class=\"caption-label\">Figure 1.</span> A nice plot"),
+            "{html}"
+        );
+        assert_eq!((list[0]["from_line"].as_u64(), list[0]["to_line"].as_u64()), (Some(1), Some(5)));
     }
 }
