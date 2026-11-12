@@ -389,7 +389,9 @@ fn format_date(text: &str) -> String {
     let parts: Vec<&str> = t.split('-').collect();
     if let [y, m, d] = parts[..] {
         if let (4, Ok(m), Ok(d)) = (y.len(), m.parse::<usize>(), d.parse::<u32>()) {
-            if y.bytes().all(|b| b.is_ascii_digit()) && (1..=12).contains(&m) && (1..=31).contains(&d)
+            if y.bytes().all(|b| b.is_ascii_digit())
+                && (1..=12).contains(&m)
+                && (1..=31).contains(&d)
             {
                 return format!("{d} {} {y}", MONTHS[m - 1]);
             }
@@ -493,7 +495,8 @@ pub(crate) fn title_block(ctx: &Context) -> String {
     {
         return String::new();
     }
-    let mut out = String::from("<header class=\"title-block\">");
+    let mut out =
+        String::from("<header class=\"title-block\" data-librepaper-generated=\"quarto\">");
     if !title.is_empty() {
         out.push_str(&format!("<h1 class=\"title\">{}</h1>", escape(&title)));
     }
@@ -529,7 +532,10 @@ pub(crate) fn title_block(ctx: &Context) -> String {
                 )
             })
             .collect();
-        out.push_str(&format!("<p class=\"affiliations\">{}</p>", items.join(" ")));
+        out.push_str(&format!(
+            "<p class=\"affiliations\">{}</p>",
+            items.join(" ")
+        ));
     }
     if !date.is_empty() {
         out.push_str(&format!("<p class=\"date\">{}</p>", escape(&date)));
@@ -561,15 +567,12 @@ mod tests {
         let source = "---\ntitle: Draft title\nauthors:\n  - name: Ada Lovelace\ndate: 1843\nabstract: A short abstract\n---\n\nBody\n";
         let d = compose(source);
         assert!(
-            d.markdown
-                .starts_with("<header class=\"title-block\""),
+            d.markdown.starts_with("<header class=\"title-block\""),
             "{}",
             d.markdown
         );
         assert!(d.markdown.contains("<h1 class=\"title\">Draft title</h1>"));
-        assert!(d
-            .markdown
-            .contains("<p class=\"author\">Ada Lovelace</p>"));
+        assert!(d.markdown.contains("<p class=\"author\">Ada Lovelace</p>"));
         assert!(d.markdown.contains("<p class=\"date\">1843</p>"));
         assert!(d
             .markdown
@@ -671,7 +674,9 @@ mod tests {
         let Some(Yaml::List(authors)) = get(&fm.meta, "author") else {
             panic!()
         };
-        let Yaml::Map(ada) = &authors[0] else { panic!() };
+        let Yaml::Map(ada) = &authors[0] else {
+            panic!()
+        };
         let Some(Yaml::List(affs)) = get(ada, "affiliations") else {
             panic!("{ada:?}")
         };
@@ -680,7 +685,9 @@ mod tests {
         assert_eq!(get(first, "city"), Some(&Yaml::Str("London".into())));
         assert_eq!(affs[1], Yaml::Str("Royal Society".into()));
         assert_eq!(get(ada, "email"), Some(&Yaml::Str("ada@x.org".into())));
-        let Yaml::Map(grace) = &authors[1] else { panic!() };
+        let Yaml::Map(grace) = &authors[1] else {
+            panic!()
+        };
         let Some(Yaml::Map(navy)) = get(grace, "affiliation") else {
             panic!()
         };

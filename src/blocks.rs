@@ -261,7 +261,11 @@ mod tests {
             [(1, 4), (6, 6), (8, 11), (13, 15)],
             "{blocks:?}"
         );
-        assert!(blocks[0].html.contains("<h1>T</h1>"), "{}", blocks[0].html);
+        assert!(
+            blocks[0].html.contains("<h1 class=\"title\">T</h1>"),
+            "{}",
+            blocks[0].html
+        );
         assert!(
             blocks[1]
                 .html
@@ -299,7 +303,7 @@ mod tests {
             blocks[1].html.contains("a &lt;- 1")
                 && blocks[1]
                     .html
-                    .contains("<div class=\"lp-cell-output\"><p>RESULT</p></div>"),
+                    .contains("<div class=\"cell-output lp-cell-output\"><p>RESULT</p></div>"),
             "{}",
             blocks[1].html
         );

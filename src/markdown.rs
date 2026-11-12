@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(out.diagnostics.len(), 1);
         assert_eq!(out.diagnostics[0].message, "quarto_cell_unfinished");
         let page = out.into_result().unwrap();
-        assert!(page.contains("<h1>Paper</h1>"), "{page}");
+        assert!(page.contains("<h1 class=\"title\">Paper</h1>"), "{page}");
         assert!(page.contains("Figure 1"), "{page}");
     }
 

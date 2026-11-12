@@ -208,7 +208,10 @@ fn show_code(cell: &Cell, ctx: &Context, out: &mut Out) {
         .filter(|t| !t.trim().is_empty())
     {
         out.block(
-            &format!("<div class=\"code-filename\">{}</div>", crate::page::escape(&name)),
+            &format!(
+                "<div class=\"code-filename\">{}</div>",
+                crate::page::escape(&name)
+            ),
             span,
         );
     }
@@ -278,19 +281,25 @@ mod tests {
         // `echo: false` shows nothing.
         let d = compose("```{r,echo=FALSE}\nhidden_one()\n```\n").markdown;
         assert!(!d.contains("hidden_one"), "{d}");
-        let d = compose("---\nexecute:\n  echo: false\n---\n\n```{r}\nhidden_two()\n```\n").markdown;
+        let d =
+            compose("---\nexecute:\n  echo: false\n---\n\n```{r}\nhidden_two()\n```\n").markdown;
         assert!(!d.contains("hidden_two"), "{d}");
-        let d = compose("---\nexecute:\n  echo: false\n---\n\n```{r}\n#| echo: true\nback_again()\n```\n").markdown;
+        let d = compose(
+            "---\nexecute:\n  echo: false\n---\n\n```{r}\n#| echo: true\nback_again()\n```\n",
+        )
+        .markdown;
         assert!(d.contains("back_again()"), "{d}");
     }
 
     #[test]
     fn a_filename_goes_above_the_code() {
-        for fence in ["```{r}\n#| filename: analysis.R\n", "```{r filename=analysis.R}\n"] {
+        for fence in [
+            "```{r}\n#| filename: analysis.R\n",
+            "```{r filename=analysis.R}\n",
+        ] {
             let d = compose(&format!("{fence}x()\n```\n")).markdown;
             assert_eq!(
-                d,
-                "\n<div class=\"code-filename\">analysis.R</div>\n\n```r\nx()\n```\n",
+                d, "\n<div class=\"code-filename\">analysis.R</div>\n\n```r\nx()\n```\n",
                 "{fence}"
             );
         }
@@ -299,7 +308,10 @@ mod tests {
     #[test]
     fn code_fold_wraps_the_code_in_details() {
         let d = compose("```{r}\n#| code-fold: true\nx()\n```\n").markdown;
-        assert!(d.contains("<details class=\"code-fold\"><summary>Code</summary>"), "{d}");
+        assert!(
+            d.contains("<details class=\"code-fold\"><summary>Code</summary>"),
+            "{d}"
+        );
         assert!(d.find("<details").unwrap() < d.find("```r").unwrap());
         assert!(d.find("```r").unwrap() < d.find("</details>").unwrap());
         let d = compose("```{r}\n#| code-fold: show\n#| code-summary: \"The <code>\"\n#| filename: a.R\nx()\n```\n").markdown;
@@ -309,22 +321,36 @@ mod tests {
         );
         assert!(d.find("code-filename").unwrap() > d.find("<summary>").unwrap());
         // Document defaults: top level and `format: html:`.
-        let d = compose("---\ncode-fold: true\ncode-summary: Show\n---\n\n```{r}\nx()\n```\n").markdown;
+        let d =
+            compose("---\ncode-fold: true\ncode-summary: Show\n---\n\n```{r}\nx()\n```\n").markdown;
         assert!(d.contains("<summary>Show</summary>"), "{d}");
-        let d = compose("---\nformat:\n  html:\n    code-fold: show\n---\n\n```{r}\nx()\n```\n").markdown;
+        let d = compose("---\nformat:\n  html:\n    code-fold: show\n---\n\n```{r}\nx()\n```\n")
+            .markdown;
         assert!(d.contains("<details class=\"code-fold\" open>"), "{d}");
-        let d = compose("---\ncode-fold: true\n---\n\n```{r}\n#| code-fold: false\nx()\n```\n").markdown;
+        let d = compose("---\ncode-fold: true\n---\n\n```{r}\n#| code-fold: false\nx()\n```\n")
+            .markdown;
         assert!(!d.contains("<details"), "{d}");
-        // Every generated line belongs to the cell.
+        // Every generated line belongs to the cell (line 5 is the empty
+        // line after the source's final newline).
         let d = compose("```{r}\n#| code-fold: true\nx()\n```\n");
-        assert!(d.origin.iter().all(|o| *o == (1, 4) || *o == (3, 3)), "{:?}", d.origin);
+        assert!(
+            d.origin
+                .iter()
+                .all(|o| *o == (1, 4) || *o == (3, 3) || *o == (5, 5)),
+            "{:?}",
+            d.origin
+        );
     }
 
     #[test]
     fn include_output_and_eval_options() {
         let source = |opt: &str| format!("```{{r}}\n#| {opt}\nshown_code()\n```\n");
         let run = |opt: &str| {
-            with_outputs(&source(opt), r#"{"outputs":[{"line":1,"html":"<p>OUT</p>"}]}"#).markdown
+            with_outputs(
+                &source(opt),
+                r#"{"outputs":[{"line":1,"html":"<p>OUT</p>"}]}"#,
+            )
+            .markdown
         };
         let d = run("include: false");
         assert!(!d.contains("shown_code") && !d.contains("OUT"), "{d}");
