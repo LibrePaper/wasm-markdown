@@ -147,9 +147,18 @@ fn arguments(args: &str) -> (Vec<String>, Vec<(String, String)>) {
             let close = t[1..].find(q)?;
             Some((t[1..1 + close].to_string(), 2 + close))
         };
+        // `key=value` only when the key is a plain identifier; a URL with a
+        // query string is positional.
         let key_end = rest
             .find(|c: char| c == '=' || c.is_whitespace())
-            .filter(|&k| rest[k..].starts_with('='));
+            .filter(|&k| rest[k..].starts_with('='))
+            .filter(|&k| {
+                let key = &rest[..k];
+                key.starts_with(|c: char| c.is_ascii_alphabetic())
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            });
         if let Some(k) = key_end {
             let after = &rest[k + 1..];
             let (value, used) = quoted(after).unwrap_or_else(|| {

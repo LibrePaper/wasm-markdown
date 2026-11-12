@@ -338,7 +338,14 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
         } else if let Some(Yaml::Map(m)) = current_key
             .as_ref()
             .and_then(|ck| top.iter_mut().find(|(k, _)| k == ck))
-            .map(|(_, v)| v)
+            .map(|(_, v)| {
+                // `author:` followed by `key: value` lines, not `- ` items,
+                // is one map, not an empty list.
+                if matches!(v, Yaml::List(l) if l.is_empty()) {
+                    *v = Yaml::Map(Map::new());
+                }
+                v
+            })
         {
             array_key = None;
             set(m, key, scalar(rest));
@@ -635,6 +642,16 @@ mod tests {
         assert_eq!(fm.diagnostics[0].line, 3);
         let fm = parse_front_matter(&["---", "title: x", "  nested: y", "---"]);
         assert_eq!(fm.diagnostics[0].message, "quarto_yaml_nesting");
+    }
+
+    #[test]
+    fn a_single_map_author_is_a_map() {
+        let fm = parse_front_matter(&["---", "author:", "  name: Ada", "  email: a@b.c", "---"]);
+        let Some(Yaml::Map(m)) = get(&fm.meta, "author") else {
+            panic!("{:?}", fm.meta);
+        };
+        assert_eq!(get(m, "name"), Some(&Yaml::Str("Ada".into())));
+        assert!(fm.diagnostics.is_empty(), "{:?}", fm.diagnostics);
     }
 
     #[test]
