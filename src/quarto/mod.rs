@@ -816,6 +816,6 @@ pub(crate) mod tests {
         assert!(value["markdown"]
             .as_str()
             .unwrap()
-            .ends_with("</header>\nBody"));
+            .ends_with("</header>\n\nBody"));
     }
 }
