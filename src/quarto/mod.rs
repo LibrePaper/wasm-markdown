@@ -587,7 +587,14 @@ pub fn draft(
                 if fence_closes(line, ch, len) {
                     opaque = None;
                 }
-            } else if let Some((ch, len, _)) = fence_open(line) {
+            } else if let Some((ch, len, info)) = fence_open(line) {
+                // `{=html}` and the other raw blocks (g7cv).
+                if !for_pandoc {
+                    if let Some(end) = shortcodes::raw_block(&lines, i, (ch, len), info, &mut out) {
+                        i = end + 1;
+                        continue;
+                    }
+                }
                 opaque = Some((ch, len));
                 out.push(line, mapped, (i, i));
             } else if let Some(&n) = div_opens.get(&i) {

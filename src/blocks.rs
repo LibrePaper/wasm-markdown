@@ -41,10 +41,9 @@ struct Rendered {
 
 /// Renders the top-level blocks of a draft. Footnote definitions, front
 /// matter and HTML comments are not blocks: they stay source in the editor.
-fn render_draft(markdown: &str) -> Vec<Rendered> {
-    let options = markdown::options();
+fn render_draft(markdown: &str, options: &comrak::Options) -> Vec<Rendered> {
     let arena = Arena::new();
-    let root = parse_document(&arena, markdown, &options);
+    let root = parse_document(&arena, markdown, options);
     let children: Vec<&AstNode> = root.children().collect();
     // The parser moves footnote definitions to the end, and the renderer
     // wraps them in one section. Everything from the first one on is cut.
@@ -67,7 +66,7 @@ fn render_draft(markdown: &str) -> Vec<Rendered> {
         None => root.append(end),
     }
     let mut html = String::new();
-    let _ = format_html(root, &options, &mut html);
+    let _ = format_html(root, options, &mut html);
 
     let mut cuts: Vec<(usize, usize)> = Vec::new();
     let mut at = 0;
@@ -113,17 +112,23 @@ fn render_draft(markdown: &str) -> Vec<Rendered> {
 /// "html"}]}`, lines 1-based and inclusive in the source. Quarto for a
 /// `.qmd` main file, Markdown for everything else.
 pub fn compile_blocks(source: &str, main: &str, files: Files, assets: Resolve) -> Blocks {
-    let draft = if quarto::is_quarto(main) {
+    let is_quarto = quarto::is_quarto(main);
+    let draft = if is_quarto {
         let extras = Extras::load(files);
         quarto::draft(source, main, files, &extras, false)
     } else {
         Draft::identity(source)
     };
+    let options = if is_quarto {
+        markdown::quarto_options()
+    } else {
+        markdown::options()
+    };
     // (from, to, html) in source lines. Generated lines belong to the block
     // they come from, so two blocks can claim the same lines -- a cell's code
     // and its output -- and a block that begins inside the one before joins it.
     let mut blocks: Vec<(usize, usize, String)> = Vec::new();
-    for block in render_draft(&draft.markdown) {
+    for block in render_draft(&draft.markdown, &options) {
         let last = draft.origin.len();
         let lines = block.from.max(1)..=block.to.min(last);
         let ranges = lines.filter_map(|line| draft.origin.get(line - 1));
