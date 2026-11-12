@@ -308,7 +308,7 @@ mod tests {
             blocks[1].html.contains("a &lt;- 1")
                 && blocks[1]
                     .html
-                    .contains("<div class=\"cell-output lp-cell-output\"><p>RESULT</p></div>"),
+                    .contains("<div class=\"cell-outputs\"><p>RESULT</p></div>"),
             "{}",
             blocks[1].html
         );

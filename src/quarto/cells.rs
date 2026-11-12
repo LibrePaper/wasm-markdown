@@ -272,11 +272,13 @@ pub(crate) fn display(
     };
     let block = if output.stale {
         format!(
-            "<div class=\"cell-output cell-output-stale lp-cell-output lp-cell-output-stale\" title=\"{}\">{html}</div>",
+            "<div class=\"cell-outputs cell-output-stale\" title=\"{}\">{html}</div>",
             crate::page::escape(&ctx.strings.output_stale)
         )
     } else {
-        format!("<div class=\"cell-output lp-cell-output\">{html}</div>")
+        // A plain container: the outputs inside carry their own classes
+        // (cell-output-stdout, -display, …), so it adds no rule of its own.
+        format!("<div class=\"cell-outputs\">{html}</div>")
     };
     out.block(&block, span);
 }
@@ -397,7 +399,7 @@ mod tests {
             "no option lines when output is shown"
         );
         let position = |text: &str| lines.iter().position(|l| *l == text).unwrap();
-        let one = position("<div class=\"cell-output lp-cell-output\"><p>ONE</p></div>");
+        let one = position("<div class=\"cell-outputs\"><p>ONE</p></div>");
         assert_eq!(
             (lines[one - 1], lines[one + 1]),
             ("", ""),
@@ -409,7 +411,7 @@ mod tests {
         assert_eq!(d.line_map[position("a <- 1")], Some(7));
         assert_eq!(d.line_map[position("```r")], None);
         assert!(d.markdown.contains(
-            "<div class=\"cell-output cell-output-stale lp-cell-output lp-cell-output-stale\" title=\"Old &lt;one&gt;\"><p>TWO lines</p></div>"
+            "<div class=\"cell-outputs cell-output-stale\" title=\"Old &lt;one&gt;\"><p>TWO lines</p></div>"
         ));
         assert_eq!(d.origin[one], (5, 8), "the output belongs to its cell");
     }

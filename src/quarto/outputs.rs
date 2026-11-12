@@ -349,13 +349,17 @@ fn is_caption(n: &Node) -> bool {
 /// not start with a label.
 fn strip_label(text: &str) -> Option<&str> {
     let t = text.trim_start();
+    // Quarto writes a no-break space between the word and the number
+    // ("Figure\u{a0}1"), as a character or as an entity.
     let digit = t.find(|c: char| c.is_ascii_digit())?;
     let word = &t[..digit];
     if word.is_empty()
         || word.len() > 40
         || !word
+            .replace("&nbsp;", " ")
+            .replace("&#160;", " ")
             .chars()
-            .all(|c| c.is_alphabetic() || c == ' ' || c == '.')
+            .all(|c| c.is_alphabetic() || c == ' ' || c == '\u{a0}' || c == '.')
     {
         return None;
     }
@@ -481,7 +485,7 @@ mod tests {
         let d = shown("```{r}\nx()\n```\n", STDOUT);
         assert!(
             d.contains(
-                "<div class=\"cell-output lp-cell-output\"><div class=\"cell-output cell-output-stdout\"> <pre><code>[1] 1 2 3</code></pre> </div></div>"
+                "<div class=\"cell-outputs\"><div class=\"cell-output cell-output-stdout\"> <pre><code>[1] 1 2 3</code></pre> </div></div>"
             ),
             "{d}"
         );
@@ -597,6 +601,9 @@ mod tests {
         assert_eq!(strip_label("Table 2.1"), Some(""));
         assert_eq!(strip_label("Figure 3. Done"), Some("Done"));
         assert_eq!(strip_label("A plot"), None);
+        // Quarto's own spelling, with a no-break space.
+        assert_eq!(strip_label(" Figure\u{a0}1: A plot "), Some("A plot "));
+        assert_eq!(strip_label("Table&nbsp;1"), Some(""));
     }
 
     #[test]
