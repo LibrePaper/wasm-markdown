@@ -419,20 +419,35 @@ pub(crate) fn content_line(
 pub(crate) fn render_span(content: &str, attrs: &Attrs, _ctx: &mut Context) -> String {
     let has = |name: &str| attrs.classes.iter().any(|c| c == name);
     let (tag, classes): (&str, Vec<String>) = if has("mark") {
-        ("mark", attrs.classes.iter().filter(|c| *c != "mark").cloned().collect())
+        (
+            "mark",
+            attrs
+                .classes
+                .iter()
+                .filter(|c| *c != "mark")
+                .cloned()
+                .collect(),
+        )
     } else {
         (
             "span",
             attrs
                 .classes
                 .iter()
-                .map(|c| if c == "aside" { "margin".to_string() } else { c.clone() })
+                .map(|c| {
+                    if c == "aside" {
+                        "margin".to_string()
+                    } else {
+                        c.clone()
+                    }
+                })
                 .collect(),
         )
     };
     format!(
         "<{tag}{}>{content}</{tag}>",
-        tag_attributes(&attrs.id, &classes, &attrs.attrs, &CONSUMED)
+        // A span consumes nothing: `title` is an ordinary attribute on it.
+        tag_attributes(&attrs.id, &classes, &attrs.attrs, &[])
     )
 }
 
@@ -472,7 +487,8 @@ pub(crate) fn spans(text: &str, ctx: &mut Context) -> String {
         let mut id_chars = attrs.id.chars();
         let valid_id = attrs.id.is_empty()
             || (id_chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-                && id_chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.' | '-')));
+                && id_chars
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.' | '-')));
         if !valid_id || (attrs.id.is_empty() && attrs.classes.is_empty() && attrs.attrs.is_empty())
         {
             continue;
@@ -558,15 +574,24 @@ mod tests {
             d.contains("<div class=\"callout callout-note\"><div class=\"callout-title\">Note</div><div class=\"callout-body\">"),
             "{d}"
         );
-        assert!(d.contains("Body *text*.") && d.contains("</div></div>"), "{d}");
+        assert!(
+            d.contains("Body *text*.") && d.contains("</div></div>"),
+            "{d}"
+        );
         let d = compose("::: {.callout-tip title=\"Fast & easy\"}\nx\n:::\n").markdown;
-        assert!(d.contains("<div class=\"callout-title\">Fast &amp; easy</div>"), "{d}");
+        assert!(
+            d.contains("<div class=\"callout-title\">Fast &amp; easy</div>"),
+            "{d}"
+        );
     }
 
     #[test]
     fn a_leading_heading_titles_the_callout() {
         let d = compose("::: {.callout-warning}\n## Mind the gap\n\nBody.\n:::\n").markdown;
-        assert!(d.contains("<div class=\"callout-title\">Mind the gap</div>"), "{d}");
+        assert!(
+            d.contains("<div class=\"callout-title\">Mind the gap</div>"),
+            "{d}"
+        );
         assert!(!d.contains("## Mind the gap"), "{d}");
         assert!(d.contains("Body."), "{d}");
         // An explicit title keeps the heading in the body.
@@ -580,30 +605,51 @@ mod tests {
         assert!(d.contains("<details class=\"callout callout-tip\"><summary class=\"callout-title\">Tip</summary><div class=\"callout-body\">"), "{d}");
         assert!(d.contains("</div></details>"), "{d}");
         let d = compose("::: {.callout-tip collapse=false}\nx\n:::\n").markdown;
-        assert!(d.contains("<details class=\"callout callout-tip\" open>"), "{d}");
+        assert!(
+            d.contains("<details class=\"callout callout-tip\" open>"),
+            "{d}"
+        );
     }
 
     #[test]
     fn callout_appearance_adds_a_class() {
         let d = compose("::: {.callout-caution appearance=\"simple\"}\nx\n:::\n").markdown;
-        assert!(d.contains("class=\"callout callout-caution callout-simple\""), "{d}");
-        let d = compose("::: {.callout-important appearance=minimal icon=false}\nx\n:::\n").markdown;
-        assert!(d.contains("class=\"callout callout-important callout-minimal\""), "{d}");
+        assert!(
+            d.contains("class=\"callout callout-caution callout-simple\""),
+            "{d}"
+        );
+        let d =
+            compose("::: {.callout-important appearance=minimal icon=false}\nx\n:::\n").markdown;
+        assert!(
+            d.contains("class=\"callout callout-important callout-minimal\""),
+            "{d}"
+        );
         assert!(!d.contains("icon"), "{d}");
     }
 
     #[test]
     fn a_generic_div_passes_attributes_through() {
-        let d = compose("::: {#b .wide style=\"color:red\" data-x=\"a\\\"b\" onclick=bad}\nx\n:::\n").markdown;
-        assert!(d.contains("<div class=\"wide\" id=\"b\" style=\"color:red\" data-x=\"a&quot;b\">"), "{d}");
+        let d =
+            compose("::: {#b .wide style=\"color:red\" data-x=\"a\\\"b\" onclick=bad}\nx\n:::\n")
+                .markdown;
+        assert!(
+            d.contains("<div class=\"wide\" id=\"b\" style=\"color:red\" data-x=\"a&#34;b\">"),
+            "{d}"
+        );
         assert!(!d.contains("onclick"), "{d}");
     }
 
     #[test]
     fn columns_carry_their_width() {
-        let d = compose("::: columns\n::: {.column width=\"40%\"}\nA\n:::\n::: {.column}\nB\n:::\n:::\n").markdown;
+        let d = compose(
+            "::: columns\n::: {.column width=\"40%\"}\nA\n:::\n::: {.column}\nB\n:::\n:::\n",
+        )
+        .markdown;
         assert!(d.contains("<div class=\"columns\">"), "{d}");
-        assert!(d.contains("<div class=\"column\" style=\"flex-basis:40%\">"), "{d}");
+        assert!(
+            d.contains("<div class=\"column\" style=\"flex-basis:40%\">"),
+            "{d}"
+        );
         assert!(d.contains("<div class=\"column\">"), "{d}");
     }
 
@@ -618,10 +664,17 @@ mod tests {
 
     #[test]
     fn a_tabset_starts_a_tab_at_each_heading() {
-        let d = compose("::: {.panel-tabset}\n## R\n\nr code\n\n## Python\n\npy code\n:::\n").markdown;
+        let d =
+            compose("::: {.panel-tabset}\n## R\n\nr code\n\n## Python\n\npy code\n:::\n").markdown;
         assert!(d.contains("<div class=\"tabset\">"), "{d}");
-        assert!(d.contains("<div class=\"tab\"><p class=\"tab-title\">R</p>"), "{d}");
-        assert!(d.contains("</div><div class=\"tab\"><p class=\"tab-title\">Python</p>"), "{d}");
+        assert!(
+            d.contains("<div class=\"tab\"><p class=\"tab-title\">R</p>"),
+            "{d}"
+        );
+        assert!(
+            d.contains("</div><div class=\"tab\"><p class=\"tab-title\">Python</p>"),
+            "{d}"
+        );
         assert!(d.contains("</div></div>"), "{d}");
         // The divs balance: tabset, two tabs.
         assert_eq!(d.matches("<div").count(), 3, "{d}");
@@ -630,11 +683,16 @@ mod tests {
 
     #[test]
     fn spans_take_classes_and_attributes() {
-        let d = compose("[Small]{.smallcaps} [under]{.underline} [hi]{.mark} [x]{.a #i title=\"t\"}\n").markdown;
+        let d =
+            compose("[Small]{.smallcaps} [under]{.underline} [hi]{.mark} [x]{.a #i title=\"t\"}\n")
+                .markdown;
         assert!(d.contains("<span class=\"smallcaps\">Small</span>"), "{d}");
         assert!(d.contains("<span class=\"underline\">under</span>"), "{d}");
         assert!(d.contains("<mark>hi</mark>"), "{d}");
-        assert!(d.contains("<span class=\"a\" id=\"i\" title=\"t\">x</span>"), "{d}");
+        assert!(
+            d.contains("<span class=\"a\" id=\"i\" title=\"t\">x</span>"),
+            "{d}"
+        );
         // A link is not a span.
         assert!(compose("[t](u){.x}\n").markdown.contains("[t](u){.x}"));
     }
@@ -659,6 +717,9 @@ mod block_tests {
         assert_eq!(list.len(), 1, "{}", blocks.json);
         let html = list[0]["html"].as_str().unwrap();
         assert!(html.contains("callout-title\">Heads up</div>"), "{html}");
-        assert!(html.contains("<p>First.</p>") && html.contains("<p>Second.</p>"), "{html}");
+        assert!(
+            html.contains("<p>First.</p>") && html.contains("<p>Second.</p>"),
+            "{html}"
+        );
     }
 }

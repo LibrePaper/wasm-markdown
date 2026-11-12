@@ -190,7 +190,7 @@ mod tests {
                       ::: {#tbl-one}\nTable caption\n:::\n";
         let d = compose(source).markdown;
         assert!(
-            d.contains("<div class=\"callout-note\" id=\"intro\">"),
+            d.contains("<div class=\"callout callout-note\" id=\"intro\">"),
             "{d}"
         );
         assert!(d.contains("<div id=\"tbl-one\">"), "{d}");
