@@ -202,7 +202,7 @@ fn item_slot<'a>(top: &'a mut Map, list: &str, at: usize, key: &str) -> Option<&
 }
 
 /// The small YAML reader for front matter: top-level scalars, one level of
-/// nesting, and lists for the keys that take them. Unknown shapes are warned
+/// nesting (two under a key whose child opens a map, as `format:`), and lists for the keys that take them. Unknown shapes are warned
 /// about; the source itself is never rewritten.
 pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
     let none = |diagnostics: Vec<Diagnostic>| FrontMatter {
@@ -231,6 +231,9 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
     // A key of the list item that opened a nested list or map (an author's
     // `affiliations:`): its name and its indent.
     let mut nested: Option<(String, usize)> = None;
+    // A key of the top-level map that opened a map of its own (`format:`'s
+    // `html:`): its name and its indent.
+    let mut sub: Option<(String, usize)> = None;
     for (i, line) in lines.iter().enumerate().take(close).skip(1) {
         if line.trim().is_empty() || line.trim_start().starts_with('#') {
             continue;
@@ -298,6 +301,7 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
             array_item = None;
             array_indent = -1;
             nested = None;
+            sub = None;
             let value = if !rest.is_empty() {
                 scalar(rest)
             } else if array_key.is_some() {
@@ -348,7 +352,20 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
             })
         {
             array_key = None;
-            set(m, key, scalar(rest));
+            let inside = sub.clone().filter(|(_, si)| indent > *si);
+            if let Some((skey, _)) = inside {
+                if let Some(Yaml::Map(inner)) =
+                    m.iter_mut().find(|(k, _)| *k == skey).map(|(_, v)| v)
+                {
+                    set(inner, key, scalar(rest));
+                }
+            } else if rest.is_empty() {
+                set(m, key, Yaml::Map(Map::new()));
+                sub = Some((key.to_string(), indent));
+            } else {
+                set(m, key, scalar(rest));
+                sub = None;
+            }
         } else {
             diagnostics.push(warning(
                 "quarto_yaml_nesting",
@@ -642,6 +659,31 @@ mod tests {
         assert_eq!(fm.diagnostics[0].line, 3);
         let fm = parse_front_matter(&["---", "title: x", "  nested: y", "---"]);
         assert_eq!(fm.diagnostics[0].message, "quarto_yaml_nesting");
+    }
+
+    #[test]
+    fn format_keeps_a_map_per_format() {
+        let fm = parse_front_matter(&[
+            "---",
+            "format:",
+            "  html:",
+            "    code-fold: false",
+            "  pdf:",
+            "    code-fold: true",
+            "---",
+        ]);
+        assert!(fm.diagnostics.is_empty(), "{:?}", fm.diagnostics);
+        let Some(Yaml::Map(format)) = get(&fm.meta, "format") else {
+            panic!("{:?}", fm.meta);
+        };
+        let Some(Yaml::Map(html)) = get(format, "html") else {
+            panic!("{format:?}");
+        };
+        assert_eq!(get(html, "code-fold"), Some(&Yaml::Bool(false)));
+        let Some(Yaml::Map(pdf)) = get(format, "pdf") else {
+            panic!("{format:?}");
+        };
+        assert_eq!(get(pdf, "code-fold"), Some(&Yaml::Bool(true)));
     }
 
     #[test]

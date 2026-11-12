@@ -246,6 +246,33 @@ mod tests {
     }
 
     #[test]
+    fn a_heading_after_the_front_matter_is_its_own_block() {
+        let blocks = run("---\ntitle: T\n---\n# H\n", "paper.qmd", &no_files);
+        assert!(
+            blocks.iter().any(|b| b.html.starts_with("<h1")),
+            "{blocks:?}"
+        );
+    }
+
+    #[test]
+    fn multi_line_output_is_one_block_with_its_breaks() {
+        let source = "```{r}\nx()\n```\n";
+        let files = |p: &str| {
+            (p == ".librepaper/quarto.json").then(|| {
+                r#"{"outputs":[{"line":1,"html":"<pre><code>a\n\nb</code></pre>"}]}"#.to_string()
+            })
+        };
+        let blocks = run(source, "paper.qmd", &files);
+        let outs: Vec<_> = blocks
+            .iter()
+            .filter(|b| b.html.contains("cell-outputs"))
+            .collect();
+        assert_eq!(outs.len(), 1, "{blocks:?}");
+        assert!(outs[0].html.contains("<pre><code>a\n"), "{:?}", outs[0]);
+        assert!(outs[0].html.contains("b</code></pre>"), "{:?}", outs[0]);
+    }
+
+    #[test]
     fn images_are_resolved_like_the_page() {
         let source = "![x](fig/one.png)\n";
         let assets = |p: &str| (p == "fig/one.png").then(|| "https://cdn.test/one.png".to_string());

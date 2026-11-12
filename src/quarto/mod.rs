@@ -615,6 +615,8 @@ pub fn draft(
                 if !note_markup.is_empty() {
                     out.block(&note_markup, (0, i));
                 }
+                // The HTML block ends here, so the prose after `---` is its own.
+                out.push("", None, (0, i));
             }
             i += 1;
             continue;
@@ -853,10 +855,11 @@ pub(crate) mod tests {
     fn the_draft_json_has_nulls_for_generated_lines() {
         let json = compose("---\ntitle: T\n---\nBody").to_json();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["line_map"], serde_json::json!([null, 4]));
+        // The title block, then the blank line that keeps it a block of its own.
+        assert_eq!(value["line_map"], serde_json::json!([null, null, 4]));
         assert!(value["markdown"]
             .as_str()
             .unwrap()
-            .ends_with("</header>\nBody"));
+            .ends_with("</header>\n\nBody"));
     }
 }

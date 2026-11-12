@@ -156,7 +156,7 @@ fn is_off(value: Option<&Yaml>) -> bool {
 }
 
 /// A document-level code option: the top level of the front matter, then
-/// `format:` (the reader flattens `format: html:` into `format`).
+/// `format:` (`format` is a map of per-format maps; only `html` counts).
 fn format_option<'a>(ctx: &Context<'a>, key: &str) -> Option<&'a Yaml> {
     let meta: &'a Map = ctx.meta;
     let nonnull = |v: &'a Yaml| (*v != Yaml::Null).then_some(v);
@@ -165,9 +165,6 @@ fn format_option<'a>(ctx: &Context<'a>, key: &str) -> Option<&'a Yaml> {
             if let Some(v) = get(html, key).and_then(nonnull) {
                 return Some(v);
             }
-        }
-        if let Some(v) = get(format, key).and_then(nonnull) {
-            return Some(v);
         }
     }
     get(meta, key).and_then(nonnull)
@@ -228,6 +225,16 @@ fn show_code(cell: &Cell, ctx: &Context, out: &mut Out) {
     }
 }
 
+/// The saved output with its line breaks kept (`<pre>` needs them), and every
+/// empty line an HTML comment, so a CommonMark HTML block does not end there.
+fn keep_one_block(html: &str) -> String {
+    html.replace("\r\n", "\n")
+        .split('\n')
+        .map(|l| if l.trim().is_empty() { "<!-- -->" } else { l })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Puts a cell in the draft, as Quarto shows it: its code (unless `echo` is
 /// off) as a plain code block, then the saved output if the host passed one
 /// (unless `output` is off or `eval` is false). `include: false` hides all of
@@ -249,7 +256,7 @@ pub(crate) fn display(
     let output = output.filter(|_| show_output);
     let html = output.map(|o| {
         let html = super::outputs::normalize(&o.html, cell, ctx);
-        (o, html.replace("\r\n", " ").replace('\n', " "))
+        (o, keep_one_block(&html))
     });
     // A labelled cell has exactly one element with its id: the saved float
     // when it carries it, an empty anchor before the code otherwise.
@@ -411,9 +418,32 @@ mod tests {
         assert_eq!(d.line_map[position("a <- 1")], Some(7));
         assert_eq!(d.line_map[position("```r")], None);
         assert!(d.markdown.contains(
-            "<div class=\"cell-outputs cell-output-stale\" title=\"Old &lt;one&gt;\"><p>TWO lines</p></div>"
+            "<div class=\"cell-outputs cell-output-stale\" title=\"Old &lt;one&gt;\"><p>TWO\nlines</p></div>"
         ));
         assert_eq!(d.origin[one], (5, 8), "the output belongs to its cell");
+    }
+
+    #[test]
+    fn multi_line_output_keeps_its_breaks() {
+        let source = "---\ntitle: T\n---\n\n```{r}\nx()\n```\n";
+        let json = r#"{"outputs":[{"line":5,"html":"<pre><code>a\n\nb</code></pre>"}]}"#;
+        let d = with_outputs(source, json);
+        assert!(
+            d.markdown.contains(
+                "<div class=\"cell-outputs\"><pre><code>a\n<!-- -->\nb</code></pre></div>"
+            ),
+            "{}",
+            d.markdown
+        );
+    }
+
+    #[test]
+    fn format_html_options_win_and_other_formats_are_ignored() {
+        let d = compose("---\nformat:\n  html:\n    code-fold: false\n  pdf:\n    code-fold: true\n---\n\n```{r}\nx()\n```\n").markdown;
+        assert!(!d.contains("<details"), "{d}");
+        let d = compose("---\nformat:\n  pdf:\n    code-fold: true\n---\n\n```{r}\nx()\n```\n")
+            .markdown;
+        assert!(!d.contains("<details"), "{d}");
     }
 
     #[test]
