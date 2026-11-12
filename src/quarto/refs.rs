@@ -15,12 +15,10 @@ use std::ops::Range;
 use crate::page::escape;
 
 use super::attrs::parse_attributes;
-use super::divs::{self, Div};
 use super::cells::option;
+use super::divs::{self, Div};
 use super::front_matter::{get, Map, Yaml};
-use super::{
-    backtick_run, code_span_end, fence_closes, fence_open, prose, Context, Out, Parsed,
-};
+use super::{backtick_run, code_span_end, fence_closes, fence_open, prose, Context, Out, Parsed};
 
 // ------------------------------------------------------------- references
 
@@ -1192,8 +1190,12 @@ pub(crate) fn crossrefs(text: &str, refs: &Refs, pandoc: bool) -> String {
 /// remark or solution, or an appendix.
 /// Whether the draft keeps this div's fence line as written: Pandoc reads
 /// fenced divs itself, and raw HTML would be dropped from its PDF.
-pub(crate) fn passes_through(div: &Div, ctx: &Context) -> bool {
-    ctx.for_pandoc && wants(div)
+/// Whether a div's fences go to the draft as written. Pandoc reads fenced
+/// divs itself, and the HTML the preview makes for them (callouts, margins,
+/// figures, theorems) would vanish from a PDF, so the Pandoc draft keeps
+/// every div as authored.
+pub(crate) fn passes_through(_div: &Div, ctx: &Context) -> bool {
+    ctx.for_pandoc
 }
 
 pub(crate) fn wants(div: &Div) -> bool {
@@ -1362,8 +1364,7 @@ fn pandoc_line(i: usize, lines: &[&str], ctx: &mut Context, out: &mut Out) -> Op
     if !matches!(span.item, Item::Equation { .. }) {
         return None;
     }
-    for l in i..=span.end {
-        let line = lines[l];
+    for (l, &line) in lines.iter().enumerate().take(span.end + 1).skip(i) {
         let from = if l == i {
             line.find("$$").map_or(0, |k| k + 2)
         } else {
@@ -1673,7 +1674,14 @@ mod tests {
     #[test]
     fn pandoc_gets_native_markdown_for_every_reference_feature() {
         let d = pandoc(EVERYTHING);
-        for banned in ["<figure", "<div class=\"equation\"", "<nav", "data-number", "<a ", "<span"] {
+        for banned in [
+            "<figure",
+            "<div class=\"equation\"",
+            "<nav",
+            "data-number",
+            "<a ",
+            "<span",
+        ] {
             assert!(!d.contains(banned), "{banned} in:\n{d}");
         }
         for kept in [
@@ -1697,9 +1705,40 @@ mod tests {
     }
 
     #[test]
+    fn the_pandoc_draft_keeps_callouts_margins_and_tabsets_as_fenced_divs() {
+        let source = "::: {.callout-note}\n## Title\nBody.\n:::\n\n::: {.column-margin}\nAside.\n:::\n\n::: {.panel-tabset}\n## R\nr\n:::\n";
+        let d = crate::quarto::draft(
+            source,
+            "main.qmd",
+            &|_: &str| None,
+            &crate::quarto::Extras::default(),
+            true,
+        )
+        .markdown;
+        assert!(
+            d.contains("::: {.callout-note}") && d.contains("## Title"),
+            "{d}"
+        );
+        assert!(
+            d.contains("::: {.column-margin}") && d.contains("## R"),
+            "{d}"
+        );
+        assert!(
+            !d.contains("<div") && !d.contains("<aside") && !d.contains("<details"),
+            "{d}"
+        );
+    }
+
+    #[test]
     fn the_preview_keeps_its_html_for_the_same_document() {
         let d = compose(EVERYTHING).markdown;
-        for html in ["<figure", "<div class=\"equation\"", "<nav", "data-number", "<a "] {
+        for html in [
+            "<figure",
+            "<div class=\"equation\"",
+            "<nav",
+            "data-number",
+            "<a ",
+        ] {
             assert_has(&d, html);
         }
     }

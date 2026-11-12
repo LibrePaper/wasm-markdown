@@ -280,7 +280,10 @@ pub(crate) fn code_span_end(line: &str, i: usize) -> Option<usize> {
 
 /// The length of the run of backticks at `i`.
 pub(crate) fn backtick_run(line: &str, i: usize) -> usize {
-    line.as_bytes()[i..].iter().take_while(|&&c| c == b'`').count()
+    line.as_bytes()[i..]
+        .iter()
+        .take_while(|&&c| c == b'`')
+        .count()
 }
 
 /// Makes the common cross references readable. Inline code and links are
@@ -673,7 +676,7 @@ pub fn draft(
             } else {
                 // A div may rewrite its own content lines (a callout's title
                 // heading, the headings that start tabs).
-                if let Some(&n) = open_divs.last() {
+                if let Some(&n) = open_divs.last().filter(|_| !ctx.for_pandoc) {
                     if let Some(html) = divs::content_line(&parsed.divs[n], &lines, i, &mut ctx) {
                         if !html.is_empty() {
                             out.block(&html, (i, i));
