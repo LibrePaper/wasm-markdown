@@ -19,35 +19,6 @@ use super::divs::{self, Div};
 use super::front_matter::{get, Map, Yaml};
 use super::{fence_closes, fence_open, prose, Context, Out, Parsed};
 
-/// `## Heading {#sec-id}` gives the id.
-pub(crate) fn heading_id(line: &str) -> Option<String> {
-    let t = line.trim_start_matches(' ');
-    if line.len() - t.len() > 3 {
-        return None;
-    }
-    let hashes = t.bytes().take_while(|&b| b == b'#').count();
-    if !(1..=6).contains(&hashes) {
-        return None;
-    }
-    let rest = &t[hashes..];
-    if !rest.starts_with(char::is_whitespace) {
-        return None;
-    }
-    let rest = rest.trim_end().strip_suffix('}')?;
-    let at = rest.rfind("{#")?;
-    let (before, id) = (&rest[..at], &rest[at + 2..]);
-    if !before.ends_with(char::is_whitespace) || before.trim().is_empty() {
-        return None;
-    }
-    let mut chars = id.chars();
-    if !chars.next().is_some_and(|c| c.is_ascii_alphabetic()) {
-        return None;
-    }
-    chars
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.' | '-'))
-        .then(|| id.to_string())
-}
-
 // ------------------------------------------------------------- references
 
 /// Id prefixes of numbered targets: figures, tables, sections, equations,
@@ -389,8 +360,7 @@ fn split_attrs(text: &str) -> (&str, Option<&str>) {
         return (t, None);
     };
     let (before, inner) = (&t[..k], t[k + 1..t.len() - 1].trim());
-    let looks_like_attributes =
-        inner.starts_with(|c: char| matches!(c, '#' | '.' | '-')) || inner.contains('=');
+    let looks_like_attributes = inner.starts_with(['#', '.', '-']) || inner.contains('=');
     if !looks_like_attributes || !(before.is_empty() || before.ends_with(char::is_whitespace)) {
         return (t, None);
     }
@@ -462,7 +432,10 @@ fn is_plain_paragraph(line: &str) -> bool {
     let digits = t.bytes().take_while(|b| b.is_ascii_digit()).count();
     let ordered = digits > 0
         && matches!(t.as_bytes().get(digits).copied(), Some(b'.' | b')'))
-        && t[digits + 1..].chars().next().is_none_or(char::is_whitespace);
+        && t[digits + 1..]
+            .chars()
+            .next()
+            .is_none_or(char::is_whitespace);
     let first = t.chars().next().unwrap_or(' ');
     !(ordered
         || matches!(first, '#' | '>' | '|' | '<' | '-' | '+' | ':' | '=')
@@ -847,7 +820,11 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
             .iter()
             .find(|(_, range)| range.contains(&line))
             .map(|(n, _)| *n)
-            .or_else(|| appendix_from.filter(|&from| line >= from).map(|_| usize::MAX))
+            .or_else(|| {
+                appendix_from
+                    .filter(|&from| line >= from)
+                    .map(|_| usize::MAX)
+            })
     };
     let mut counters = [0usize; 6];
     let mut region: Option<usize> = None;
@@ -864,7 +841,10 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
         }
         let appendix = key.is_some();
         let anchor = anchorizer.anchorize(&slug_text(&h.title));
-        let depth = h.level.saturating_sub(if appendix { appendix_level } else { base }) + 1;
+        let depth = h
+            .level
+            .saturating_sub(if appendix { appendix_level } else { base })
+            + 1;
         let number = if number_sections && !h.unnumbered && depth <= depth_limit {
             counters[depth - 1] += 1;
             for c in counters.iter_mut().skip(depth) {
@@ -1180,10 +1160,11 @@ pub(crate) fn decorate_heading(line: &str, index: usize, ctx: &mut Context) -> O
         out.push_str(&format!("<span id=\"{}\"></span>", escape(&h.id)));
     }
     if let Some(number) = &h.number {
-        // A no-break space: comrak's heading id ignores it, so the id is the
-        // one the title alone would have.
+        // The number is an attribute the stylesheet shows, not text: comrak
+        // makes a heading's id from its text, so a number there would change
+        // the id (`1intro`) and move every anchor when sections renumber.
         out.push_str(&format!(
-            "<span class=\"section-number\">{}</span>&nbsp;",
+            "<span class=\"section-number\" data-number=\"{}\"></span>",
             escape(number)
         ));
     }
@@ -1224,11 +1205,7 @@ pub(crate) fn line(i: usize, lines: &[&str], ctx: &mut Context, out: &mut Out) -
     }
     let info = refs.divs.get(refs.inline.get(&i)?)?;
     let text = prose(lines[i], ctx);
-    out.push(
-        &format!("{} {text}", refs.div_label(info)),
-        Some(i),
-        (i, i),
-    );
+    out.push(&format!("{} {text}", refs.div_label(info)), Some(i), (i, i));
     Some(1)
 }
 
@@ -1237,7 +1214,10 @@ mod tests {
     use crate::quarto::tests::{compose, no_files};
 
     fn assert_has(draft: &str, expected: &str) {
-        assert!(draft.contains(expected), "missing {expected:?} in:\n{draft}");
+        assert!(
+            draft.contains(expected),
+            "missing {expected:?} in:\n{draft}"
+        );
     }
 
     #[test]
@@ -1247,7 +1227,7 @@ mod tests {
                       See @fig-trend and @tbl-one and @fig-nope, `@fig-trend` and [@fig-trend](x).\n\n\
                       ::: {#tbl-one}\nTable caption\n:::\n";
         let d = compose(source).markdown;
-        assert_has(&d, "<div class=\"callout-note\" id=\"intro\">");
+        assert_has(&d, "<div class=\"callout callout-note\" id=\"intro\">");
         assert_has(&d, "<figure class=\"table\" id=\"tbl-one\">");
         assert_has(
             &d,
@@ -1289,16 +1269,17 @@ mod tests {
             "<figure class=\"subfigure\" id=\"fig-ga\"><img src=\"a.png\" alt=\"A\"><figcaption><span class=\"caption-label\">(a)</span> A</figcaption></figure>",
         );
         assert_has(&d, "<span class=\"caption-label\">(b)</span> B");
-        assert_has(&d, "<span class=\"caption-label\">Figure 1.</span> Grid caption");
+        assert_has(
+            &d,
+            "<span class=\"caption-label\">Figure 1.</span> Grid caption",
+        );
         assert_has(&d, "href=\"#fig-gb\">Figure 1b</a>");
     }
 
     #[test]
     fn a_figure_image_keeps_its_source_and_takes_its_size() {
-        let d = compose(
-            "![Cap](p.png){#fig-i width=50% fig-align=center}\n\nSee @fig-i.\n",
-        )
-        .markdown;
+        let d =
+            compose("![Cap](p.png){#fig-i width=50% fig-align=center}\n\nSee @fig-i.\n").markdown;
         assert_has(
             &d,
             "<figure class=\"figure\" id=\"fig-i\"><img src=\"p.png\" alt=\"Cap\" style=\"width:50%;display:block;margin-left:auto;margin-right:auto\"><figcaption><span class=\"caption-label\">Figure 1.</span> Cap</figcaption></figure>",
@@ -1308,8 +1289,9 @@ mod tests {
 
     #[test]
     fn a_table_caption_before_or_after_the_table_makes_a_table_figure() {
-        let after = compose("| a | b |\n|---|---|\n| 1 | 2 |\n\n: Results {#tbl-r}\n\nSee @tbl-r.\n")
-            .markdown;
+        let after =
+            compose("| a | b |\n|---|---|\n| 1 | 2 |\n\n: Results {#tbl-r}\n\nSee @tbl-r.\n")
+                .markdown;
         assert_has(
             &after,
             "<figure class=\"table\" id=\"tbl-r\">\n<figcaption><span class=\"caption-label\">Table 1.</span> Results</figcaption>",
@@ -1358,10 +1340,16 @@ mod tests {
             "<span class=\"theorem-label\">Lemma 1</span> <span class=\"theorem-name\">(Helper)</span>. Another.",
         );
         assert!(!d.contains("## Helper"), "{d}");
-        assert_has(&d, "<span class=\"theorem-label\">Theorem 2</span>. Second.");
+        assert_has(
+            &d,
+            "<span class=\"theorem-label\">Theorem 2</span>. Second.",
+        );
         assert_has(&d, "<div class=\"proof\">");
         assert_has(&d, "<span class=\"proof-label\">Proof.</span> Trivial.");
-        assert_has(&d, "<p><span class=\"theorem-label\">Definition 1</span>.</p>");
+        assert_has(
+            &d,
+            "<p><span class=\"theorem-label\">Definition 1</span>.</p>",
+        );
         assert_has(&d, "href=\"#thm-two\">Theorem 2</a>");
         assert_has(&d, "href=\"#lem-aux\">Lemma 1</a>");
     }
@@ -1372,14 +1360,20 @@ mod tests {
         let d = compose(source).markdown;
         assert_has(
             &d,
-            "\n# <span id=\"sec-intro\"></span><span class=\"section-number\">1</span>&nbsp;Intro\n",
+            "\n# <span id=\"sec-intro\"></span><span class=\"section-number\" data-number=\"1\"></span>Intro\n",
         );
-        assert_has(&d, "\n## <span class=\"section-number\">1.1</span>&nbsp;Sub\n");
-        assert_has(&d, "\n# <span class=\"section-number\">2</span>&nbsp;Methods\n");
+        assert_has(
+            &d,
+            "\n## <span class=\"section-number\" data-number=\"1.1\"></span>Sub\n",
+        );
+        assert_has(
+            &d,
+            "\n# <span class=\"section-number\" data-number=\"2\"></span>Methods\n",
+        );
         assert_has(&d, "\n## Detail\n");
         assert_has(
             &d,
-            "\n# <span id=\"sec-last\"></span><span class=\"section-number\">3</span>&nbsp;Last\n",
+            "\n# <span id=\"sec-last\"></span><span class=\"section-number\" data-number=\"3\"></span>Last\n",
         );
         assert_has(&d, "href=\"#sec-intro\">Section 1</a>");
         assert_has(&d, "href=\"#sec-last\">Section 3</a>");
@@ -1392,22 +1386,38 @@ mod tests {
     fn appendix_headings_are_lettered() {
         let source = "---\ntitle: T\nnumber-sections: true\n---\n\n# One\n\n# Extra {.appendix}\n\n## Sub\n\n# More\n";
         let d = compose(source).markdown;
-        assert_has(&d, "\n# <span class=\"section-number\">1</span>&nbsp;One\n");
-        assert_has(&d, "\n# <span class=\"section-number\">A</span>&nbsp;Extra\n");
-        assert_has(&d, "\n## <span class=\"section-number\">A.1</span>&nbsp;Sub\n");
-        assert_has(&d, "\n# <span class=\"section-number\">B</span>&nbsp;More\n");
+        assert_has(
+            &d,
+            "\n# <span class=\"section-number\" data-number=\"1\"></span>One\n",
+        );
+        assert_has(
+            &d,
+            "\n# <span class=\"section-number\" data-number=\"A\"></span>Extra\n",
+        );
+        assert_has(
+            &d,
+            "\n## <span class=\"section-number\" data-number=\"A.1\"></span>Sub\n",
+        );
+        assert_has(
+            &d,
+            "\n# <span class=\"section-number\" data-number=\"B\"></span>More\n",
+        );
         let wrapped = compose(
             "---\ntitle: T\nnumber-sections: true\n---\n\n# One\n\n::: {.appendix}\n# Extra\n:::\n",
         )
         .markdown;
         assert_has(&wrapped, "<section class=\"appendix\">");
         assert_has(&wrapped, "</section>");
-        assert_has(&wrapped, "<span class=\"section-number\">A</span>&nbsp;Extra");
+        assert_has(
+            &wrapped,
+            "<span class=\"section-number\" data-number=\"A\"></span>Extra",
+        );
     }
 
     #[test]
     fn the_contents_follow_the_title_block() {
-        let source = "---\ntitle: T\ntoc: true\ntoc-title: Inhalt\n---\n\n# One\n\n## Two\n\n# Three\n";
+        let source =
+            "---\ntitle: T\ntoc: true\ntoc-title: Inhalt\n---\n\n# One\n\n## Two\n\n# Three\n";
         let d = compose(source).markdown;
         assert_has(
             &d,
@@ -1450,6 +1460,9 @@ mod tests {
             html.contains("<span class=\"caption-label\">Figure 1.</span> A nice plot"),
             "{html}"
         );
-        assert_eq!((list[0]["from_line"].as_u64(), list[0]["to_line"].as_u64()), (Some(1), Some(5)));
+        assert_eq!(
+            (list[0]["from_line"].as_u64(), list[0]["to_line"].as_u64()),
+            (Some(1), Some(5))
+        );
     }
 }

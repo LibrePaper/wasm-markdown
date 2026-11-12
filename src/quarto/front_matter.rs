@@ -190,6 +190,17 @@ fn key_line(line: &str) -> Option<(usize, &str, &str)> {
     ))
 }
 
+/// The value of `key` inside the map item `at` of the top-level list `list`.
+fn item_slot<'a>(top: &'a mut Map, list: &str, at: usize, key: &str) -> Option<&'a mut Yaml> {
+    let Some(Yaml::List(items)) = top.iter_mut().find(|(k, _)| k == list).map(|(_, v)| v) else {
+        return None;
+    };
+    let Some(Yaml::Map(m)) = items.get_mut(at) else {
+        return None;
+    };
+    m.iter_mut().find(|(k, _)| k == key).map(|(_, v)| v)
+}
+
 /// The small YAML reader for front matter: top-level scalars, one level of
 /// nesting, and lists for the keys that take them. Unknown shapes are warned
 /// about; the source itself is never rewritten.
@@ -217,11 +228,42 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
     // The map being filled inside a list: which list, and which item.
     let mut array_item: Option<(String, usize)> = None;
     let mut array_indent: isize = -1;
+    // A key of the list item that opened a nested list or map (an author's
+    // `affiliations:`): its name and its indent.
+    let mut nested: Option<(String, usize)> = None;
     for (i, line) in lines.iter().enumerate().take(close).skip(1) {
         if line.trim().is_empty() || line.trim_start().starts_with('#') {
             continue;
         }
+        if let (Some((indent, rest)), Some(ak), Some((list, at)), Some((nkey, nindent))) = (
+            list_item(line),
+            array_key.clone(),
+            array_item.clone(),
+            nested.clone(),
+        ) {
+            if indent >= nindent {
+                if let Some(slot) = item_slot(&mut top, &list, at, &nkey) {
+                    if !matches!(slot, Yaml::List(_)) {
+                        *slot = Yaml::List(Vec::new());
+                    }
+                    if let Yaml::List(entries) = slot {
+                        let entry = match rest.find(':') {
+                            Some(c) if c > 0 && !rest.starts_with(['"', '\'']) => {
+                                let mut m = Map::new();
+                                set(&mut m, rest[..c].trim(), scalar(&rest[c + 1..]));
+                                Yaml::Map(m)
+                            }
+                            _ => scalar(rest),
+                        };
+                        entries.push(entry);
+                    }
+                }
+                let _ = ak;
+                continue;
+            }
+        }
         if let (Some((indent, rest)), Some(ak)) = (list_item(line), array_key.clone()) {
+            nested = None;
             if !matches!(get(&top, &ak), Some(Yaml::List(_))) {
                 set(&mut top, &ak, Yaml::List(Vec::new()));
             }
@@ -255,6 +297,7 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
             };
             array_item = None;
             array_indent = -1;
+            nested = None;
             let value = if !rest.is_empty() {
                 scalar(rest)
             } else if array_key.is_some() {
@@ -266,17 +309,43 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
         } else if let (Some((list, at)), true) =
             (array_item.clone(), indent as isize > array_indent)
         {
-            if let Some(Yaml::List(items)) =
+            let inside = nested.clone().filter(|(_, ni)| indent > *ni);
+            if let Some((nkey, _)) = inside {
+                if let Some(slot) = item_slot(&mut top, &list, at, &nkey) {
+                    match slot {
+                        Yaml::List(entries) => {
+                            if let Some(Yaml::Map(m)) = entries.last_mut() {
+                                set(m, key, scalar(rest));
+                            }
+                        }
+                        Yaml::Map(m) => set(m, key, scalar(rest)),
+                        _ => {}
+                    }
+                }
+            } else if let Some(Yaml::List(items)) =
                 top.iter_mut().find(|(k, _)| *k == list).map(|(_, v)| v)
             {
                 if let Some(Yaml::Map(m)) = items.get_mut(at) {
-                    set(m, key, scalar(rest));
+                    if rest.is_empty() {
+                        set(m, key, Yaml::Map(Map::new()));
+                        nested = Some((key.to_string(), indent));
+                    } else {
+                        set(m, key, scalar(rest));
+                        nested = None;
+                    }
                 }
             }
         } else if let Some(Yaml::Map(m)) = current_key
             .as_ref()
             .and_then(|ck| top.iter_mut().find(|(k, _)| k == ck))
-            .map(|(_, v)| v)
+            .map(|(_, v)| {
+                // `author:` followed by `key: value` lines, not `- ` items,
+                // is one map, not an empty list.
+                if matches!(v, Yaml::List(l) if l.is_empty()) {
+                    *v = Yaml::Map(Map::new());
+                }
+                v
+            })
         {
             array_key = None;
             set(m, key, scalar(rest));
@@ -297,9 +366,64 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
     }
 }
 
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// `2026-11-12` as "12 November 2026"; any other text as written. `today`
+/// and `last-modified` mean the day the host reported, when it did.
+fn format_date(text: &str) -> String {
+    let t = text.trim();
+    if matches!(t, "today" | "now" | "last-modified") {
+        if let Some((y, m, d)) = wasm_helpers::abi::today() {
+            if (1..=12).contains(&m) {
+                return format!("{d} {} {y}", MONTHS[m as usize - 1]);
+            }
+        }
+        return t.to_string();
+    }
+    let parts: Vec<&str> = t.split('-').collect();
+    if let [y, m, d] = parts[..] {
+        if let (4, Ok(m), Ok(d)) = (y.len(), m.parse::<usize>(), d.parse::<u32>()) {
+            if y.bytes().all(|b| b.is_ascii_digit())
+                && (1..=12).contains(&m)
+                && (1..=31).contains(&d)
+            {
+                return format!("{d} {} {y}", MONTHS[m - 1]);
+            }
+        }
+    }
+    t.to_string()
+}
+
+/// The names in an `affiliation` value: a string, a map with a `name`, or a
+/// list of those.
+fn affiliation_names(value: &Yaml) -> Vec<String> {
+    match value {
+        Yaml::Str(s) if !s.trim().is_empty() => vec![s.trim().to_string()],
+        Yaml::Map(m) => get(m, "name")
+            .filter(|v| v.truthy())
+            .map(|v| vec![v.text()])
+            .unwrap_or_default(),
+        Yaml::List(items) => items.iter().flat_map(affiliation_names).collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// The title block of the draft: the HTML that stands for the front matter,
-/// or nothing when it has no title, author, date or abstract. The extension
-/// point for the title block (fwm8).
+/// or nothing when it has none of title, subtitle, author, date, abstract or
+/// keywords. The extension point for the title block (fwm8).
 pub(crate) fn title_block(ctx: &Context) -> String {
     let (meta, abstract_label) = (ctx.meta, ctx.strings.abstract_label.as_str());
     let field = |key: &str| match get(meta, key) {
@@ -318,43 +442,122 @@ pub(crate) fn title_block(ctx: &Context) -> String {
     } else {
         Vec::new()
     };
-    let names: Vec<String> = list
-        .iter()
-        .map(|a| match a {
-            Yaml::Str(s) => s.clone(),
-            Yaml::Map(m) => ["name", "literal"]
-                .into_iter()
-                .filter_map(|k| get(m, k).filter(|v| v.truthy()))
-                .map(Yaml::text)
-                .next()
-                .unwrap_or_default(),
-            _ => String::new(),
-        })
-        .filter(|n| !n.is_empty())
-        .collect();
-    let (title, date, abstract_text) = (field("title"), field("date"), field("abstract"));
-    if title.is_empty() && names.is_empty() && date.is_empty() && abstract_text.is_empty() {
+    // Each author's name and the numbers of their affiliations; the numbers
+    // follow the first appearance of each distinct affiliation.
+    let mut affiliations: Vec<String> = Vec::new();
+    let mut people: Vec<(String, Vec<usize>)> = Vec::new();
+    for a in &list {
+        let (name, names) = match a {
+            Yaml::Str(s) => (s.clone(), Vec::new()),
+            Yaml::Map(m) => (
+                ["name", "literal"]
+                    .into_iter()
+                    .filter_map(|k| get(m, k).filter(|v| v.truthy()))
+                    .map(Yaml::text)
+                    .next()
+                    .unwrap_or_default(),
+                ["affiliations", "affiliation"]
+                    .into_iter()
+                    .filter_map(|k| get(m, k))
+                    .flat_map(affiliation_names)
+                    .collect(),
+            ),
+            _ => (String::new(), Vec::new()),
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let mut numbers = Vec::new();
+        for n in names {
+            let at = match affiliations.iter().position(|x| *x == n) {
+                Some(at) => at,
+                None => {
+                    affiliations.push(n);
+                    affiliations.len() - 1
+                }
+            };
+            if !numbers.contains(&(at + 1)) {
+                numbers.push(at + 1);
+            }
+        }
+        people.push((name, numbers));
+    }
+    let subtitle = field("subtitle");
+    let (title, abstract_text) = (field("title"), field("abstract"));
+    let date = format_date(&field("date"));
+    let keywords: Vec<String> = match get(meta, "keywords").or_else(|| get(meta, "keyword")) {
+        Some(Yaml::List(l)) => l.iter().map(|k| k.text().trim().to_string()).collect(),
+        Some(v) if v.truthy() => vec![v.text().trim().to_string()],
+        _ => Vec::new(),
+    }
+    .into_iter()
+    .filter(|k| !k.is_empty())
+    .collect();
+    if title.is_empty()
+        && subtitle.is_empty()
+        && people.is_empty()
+        && date.is_empty()
+        && abstract_text.is_empty()
+        && keywords.is_empty()
+    {
         return String::new();
     }
     let mut out =
-        String::from("<header class=\"quarto-title-block\" data-librepaper-generated=\"quarto\">");
+        String::from("<header class=\"title-block\" data-librepaper-generated=\"quarto\">");
     if !title.is_empty() {
-        out.push_str(&format!("<h1>{}</h1>", escape(&title)));
+        out.push_str(&format!("<h1 class=\"title\">{}</h1>", escape(&title)));
     }
-    if !names.is_empty() {
+    if !subtitle.is_empty() {
+        out.push_str(&format!("<p class=\"subtitle\">{}</p>", escape(&subtitle)));
+    }
+    if !people.is_empty() {
+        let shown: Vec<String> = people
+            .iter()
+            .map(|(name, numbers)| {
+                let mut s = escape(name);
+                if !numbers.is_empty() {
+                    let refs: Vec<String> = numbers.iter().map(|n| n.to_string()).collect();
+                    s.push_str(&format!(
+                        "<sup class=\"affiliation-ref\">{}</sup>",
+                        refs.join(",")
+                    ));
+                }
+                s
+            })
+            .collect();
+        out.push_str(&format!("<p class=\"author\">{}</p>", shown.join(", ")));
+    }
+    if !affiliations.is_empty() {
+        let items: Vec<String> = affiliations
+            .iter()
+            .enumerate()
+            .map(|(n, a)| {
+                format!(
+                    "<span class=\"affiliation\"><sup>{}</sup> {}</span>",
+                    n + 1,
+                    escape(a)
+                )
+            })
+            .collect();
         out.push_str(&format!(
-            "<p class=\"quarto-author\">{}</p>",
-            escape(&names.join(", "))
+            "<p class=\"affiliations\">{}</p>",
+            items.join(" ")
         ));
     }
     if !date.is_empty() {
-        out.push_str(&format!("<p class=\"quarto-date\">{}</p>", escape(&date)));
+        out.push_str(&format!("<p class=\"date\">{}</p>", escape(&date)));
     }
     if !abstract_text.is_empty() {
         out.push_str(&format!(
-            "<div class=\"quarto-abstract\"><strong>{}</strong><p>{}</p></div>",
+            "<div class=\"abstract\"><p class=\"abstract-title\">{}</p><p>{}</p></div>",
             escape(abstract_label),
             escape(&abstract_text)
+        ));
+    }
+    if !keywords.is_empty() {
+        out.push_str(&format!(
+            "<p class=\"keywords\"><span class=\"keywords-label\">Keywords:</span> {}</p>",
+            escape(&keywords.join(", "))
         ));
     }
     out.push_str("</header>");
@@ -371,19 +574,16 @@ mod tests {
         let source = "---\ntitle: Draft title\nauthors:\n  - name: Ada Lovelace\ndate: 1843\nabstract: A short abstract\n---\n\nBody\n";
         let d = compose(source);
         assert!(
-            d.markdown
-                .starts_with("<header class=\"quarto-title-block\""),
+            d.markdown.starts_with("<header class=\"title-block\""),
             "{}",
             d.markdown
         );
-        assert!(d.markdown.contains("<h1>Draft title</h1>"));
+        assert!(d.markdown.contains("<h1 class=\"title\">Draft title</h1>"));
+        assert!(d.markdown.contains("<p class=\"author\">Ada Lovelace</p>"));
+        assert!(d.markdown.contains("<p class=\"date\">1843</p>"));
         assert!(d
             .markdown
-            .contains("<p class=\"quarto-author\">Ada Lovelace</p>"));
-        assert!(d.markdown.contains("<p class=\"quarto-date\">1843</p>"));
-        assert!(d
-            .markdown
-            .contains("<strong>Abstract</strong><p>A short abstract</p>"));
+            .contains("<div class=\"abstract\"><p class=\"abstract-title\">Abstract</p><p>A short abstract</p></div>"));
         assert!(!d.markdown.contains("\n---\n"));
         // The generated line has no source line; the prose keeps its own.
         assert_eq!(d.line_map[0], None);
@@ -445,6 +645,16 @@ mod tests {
     }
 
     #[test]
+    fn a_single_map_author_is_a_map() {
+        let fm = parse_front_matter(&["---", "author:", "  name: Ada", "  email: a@b.c", "---"]);
+        let Some(Yaml::Map(m)) = get(&fm.meta, "author") else {
+            panic!("{:?}", fm.meta);
+        };
+        assert_eq!(get(m, "name"), Some(&Yaml::Str("Ada".into())));
+        assert!(fm.diagnostics.is_empty(), "{:?}", fm.diagnostics);
+    }
+
+    #[test]
     fn yaml_scalars() {
         assert_eq!(scalar("TRUE"), Yaml::Bool(true));
         assert_eq!(scalar("~"), Yaml::Null);
@@ -457,5 +667,87 @@ mod tests {
         );
         assert_eq!(scalar("éa"), Yaml::Str("éa".into()));
         assert_eq!(Yaml::Num(1843.0).text(), "1843");
+    }
+
+    #[test]
+    fn nested_authors_and_affiliations_are_read() {
+        let lines = [
+            "---",
+            "author:",
+            "  - name: Ada Lovelace",
+            "    affiliations:",
+            "      - name: Analytical Engine",
+            "        city: London",
+            "      - Royal Society",
+            "    email: ada@x.org",
+            "  - name: Grace Hopper",
+            "    affiliation:",
+            "      name: Navy",
+            "title: T",
+            "---",
+        ];
+        let fm = parse_front_matter(&lines);
+        assert!(fm.diagnostics.is_empty(), "{:?}", fm.diagnostics);
+        let Some(Yaml::List(authors)) = get(&fm.meta, "author") else {
+            panic!()
+        };
+        let Yaml::Map(ada) = &authors[0] else {
+            panic!()
+        };
+        let Some(Yaml::List(affs)) = get(ada, "affiliations") else {
+            panic!("{ada:?}")
+        };
+        assert_eq!(affs.len(), 2);
+        let Yaml::Map(first) = &affs[0] else { panic!() };
+        assert_eq!(get(first, "city"), Some(&Yaml::Str("London".into())));
+        assert_eq!(affs[1], Yaml::Str("Royal Society".into()));
+        assert_eq!(get(ada, "email"), Some(&Yaml::Str("ada@x.org".into())));
+        let Yaml::Map(grace) = &authors[1] else {
+            panic!()
+        };
+        let Some(Yaml::Map(navy)) = get(grace, "affiliation") else {
+            panic!()
+        };
+        assert_eq!(get(navy, "name"), Some(&Yaml::Str("Navy".into())));
+        assert_eq!(get(&fm.meta, "title"), Some(&Yaml::Str("T".into())));
+    }
+
+    #[test]
+    fn the_title_block_numbers_distinct_affiliations() {
+        let source = "---\ntitle: T\nsubtitle: Sub <b>\nauthor:\n  - name: Ada\n    affiliations:\n      - name: Engine Lab\n      - name: Society\n  - name: Grace\n    affiliation: Engine Lab\n  - Plain Person\ndate: 2026-11-12\nabstract: Abs\nkeywords: [a, b]\n---\n\nBody\n";
+        let d = compose(source).markdown;
+        assert!(d.contains("<p class=\"subtitle\">Sub &lt;b&gt;</p>"), "{d}");
+        assert!(
+            d.contains("<p class=\"author\">Ada<sup class=\"affiliation-ref\">1,2</sup>, Grace<sup class=\"affiliation-ref\">1</sup>, Plain Person</p>"),
+            "{d}"
+        );
+        assert!(d.contains(
+            "<p class=\"affiliations\"><span class=\"affiliation\"><sup>1</sup> Engine Lab</span> <span class=\"affiliation\"><sup>2</sup> Society</span></p>"
+        ));
+        assert!(d.contains("<p class=\"date\">12 November 2026</p>"), "{d}");
+        assert!(d.contains(
+            "<p class=\"keywords\"><span class=\"keywords-label\">Keywords:</span> a, b</p>"
+        ));
+        // Without affiliations there are no numbers and no list.
+        let d = compose("---\ntitle: T\nauthor: Ada\n---\n").markdown;
+        assert!(!d.contains("<sup") && !d.contains("affiliations"), "{d}");
+    }
+
+    #[test]
+    fn dates_are_formatted_or_left_as_written() {
+        assert_eq!(format_date("2026-01-05"), "5 January 2026");
+        assert_eq!(format_date("Spring 2026"), "Spring 2026");
+        assert_eq!(format_date("2026-13-05"), "2026-13-05");
+        wasm_helpers::abi::set_today(2027, 3, 9);
+        assert_eq!(format_date("today"), "9 March 2027");
+        assert_eq!(format_date("last-modified"), "9 March 2027");
+    }
+
+    #[test]
+    fn a_title_block_may_hold_only_keywords_or_a_subtitle() {
+        let d = compose("---\nsubtitle: S\n---\n").markdown;
+        assert!(d.contains("<p class=\"subtitle\">S</p>"));
+        let d = compose("---\nkeywords:\n  - x\n  - y\n---\n").markdown;
+        assert!(d.contains("</span> x, y</p>"), "{d}");
     }
 }

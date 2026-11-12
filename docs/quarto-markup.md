@@ -43,7 +43,7 @@ the host decides. Images keep a white background in dark.
 ```
 
 ## Headings, sections, TOC
-- `<h2 id="sec-x"><span class="section-number">1.2</span> Title</h2>`
+- `<h2 id="sec-x"><span class="section-number" data-number="1.2"></span>Title</h2>`
 - `.unnumbered` on a heading: no number. `<section class="appendix">` wraps appendices (letters A, B).
 - `<nav class="toc"><p class="toc-title">Contents</p><ol><li><a href="#…"><span class="section-number">1</span> …</a><ol>…</ol></li></ol></nav>`
 

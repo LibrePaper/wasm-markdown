@@ -50,6 +50,20 @@ pub fn options() -> Options<'static> {
     }
 }
 
+/// The options for a Quarto draft: the markdown configuration plus Pandoc's
+/// extras. Plain Markdown never gets these, so its output stays as it was.
+/// `^[note]` is an inline footnote, `^x^` and `~x~` are super- and subscript
+/// (a double `~~` is still strikethrough), and a term line followed by
+/// `: definition` is a definition list.
+pub fn quarto_options() -> Options<'static> {
+    let mut options = options();
+    options.extension.inline_footnotes = true;
+    options.extension.description_lists = true;
+    options.extension.superscript = true;
+    options.extension.subscript = true;
+    options
+}
+
 /// Says whether a filename is one this renders.
 pub fn is_markdown(name: &str) -> bool {
     let lower = name.to_lowercase();
@@ -93,6 +107,12 @@ pub fn render(source: &str, title: &str) -> String {
 /// The same, with somewhere for the figures to come from.
 pub fn render_with(source: &str, title: &str, assets: Resolve) -> String {
     let body = rewrite_images(&render_body(source), assets);
+    page::page(title, "", &body)
+}
+
+/// The same for a Quarto draft, with the Quarto options.
+fn render_quarto_with(source: &str, title: &str, assets: Resolve) -> String {
+    let body = rewrite_images(&comrak::markdown_to_html(source, &quarto_options()), assets);
     page::page(title, "", &body)
 }
 
@@ -221,7 +241,8 @@ pub fn compile_quarto(
 ) -> crate::diagnostic::Compiled {
     let extras = crate::quarto::Extras::load(files);
     let draft = crate::quarto::draft(source, path, files, &extras, false);
-    let mut compiled = compile_with(&draft.markdown, title, assets);
+    let mut compiled =
+        crate::diagnostic::Compiled::page(render_quarto_with(&draft.markdown, title, assets));
     compiled.diagnostics = draft.diagnostics;
     compiled
 }
@@ -269,6 +290,35 @@ mod tests {
             );
         }
         assert!(!out.contains("<script"));
+    }
+
+    #[test]
+    fn plain_markdown_ignores_the_quarto_extras() {
+        let source = "H~2~O, x^2^ and a note^[inline] and ~~struck~~.\n";
+        let html = render_body(source);
+        for absent in ["<sub>", "<sup", "footnote"] {
+            assert!(!html.contains(absent), "{absent} in {html}");
+        }
+        assert!(html.contains("<del>struck</del>"), "{html}");
+        assert!(html.contains("^[inline]"), "{html}");
+    }
+
+    #[test]
+    fn quarto_options_enable_the_pandoc_extras() {
+        let html = comrak::markdown_to_html(
+            "H~2~O, x^2^, ~~struck~~ and a note^[inline].\n\nTerm\n: Meaning\n",
+            &quarto_options(),
+        );
+        for wanted in [
+            "H<sub>2</sub>O",
+            "x<sup>2</sup>",
+            "<del>struck</del>",
+            "footnote-ref",
+            "<dl>",
+            "<dt>Term</dt>",
+        ] {
+            assert!(html.contains(wanted), "{wanted} missing in {html}");
+        }
     }
 
     #[test]
@@ -337,7 +387,7 @@ mod tests {
         assert_eq!(out.diagnostics.len(), 1);
         assert_eq!(out.diagnostics[0].message, "quarto_cell_unfinished");
         let page = out.into_result().unwrap();
-        assert!(page.contains("<h1>Paper</h1>"), "{page}");
+        assert!(page.contains("<h1 class=\"title\">Paper</h1>"), "{page}");
         assert!(page.contains("Figure 1"), "{page}");
     }
 

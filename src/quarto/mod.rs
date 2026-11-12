@@ -92,6 +92,9 @@ pub(crate) struct Context<'a> {
     pub files: &'a dyn Fn(&str) -> Option<String>,
     /// The interface strings the draft prints.
     pub strings: &'a Strings,
+    /// Whether this is the draft Pandoc reads for a PDF: raw content for
+    /// other formats is kept as written there instead of dropped.
+    pub for_pandoc: bool,
     /// Warnings found while writing the draft.
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -138,7 +141,6 @@ pub(crate) struct Parsed {
     fm: FrontMatter,
     cells: Vec<Cell>,
     divs: Vec<Div>,
-    headings: Vec<(usize, String)>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -147,7 +149,6 @@ pub(crate) fn parse(lines: &[&str]) -> Parsed {
     let mut diagnostics = fm.diagnostics.clone();
     let mut cells: Vec<Cell> = Vec::new();
     let mut divs: Vec<Div> = Vec::new();
-    let mut headings = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
     let mut fence: Option<OpenFence> = None;
     let mut i = 0;
@@ -185,9 +186,6 @@ pub(crate) fn parse(lines: &[&str]) -> Parsed {
             }
             i = end.min(lines.len()) + 1;
             continue;
-        }
-        if let Some(id) = refs::heading_id(line) {
-            headings.push((i, id));
         }
         if let Some(info) = divs::div_fence(line) {
             if info.is_empty() {
@@ -236,7 +234,6 @@ pub(crate) fn parse(lines: &[&str]) -> Parsed {
         fm,
         cells,
         divs,
-        headings,
         diagnostics,
     }
 }
@@ -465,7 +462,7 @@ pub(crate) fn verbatim_fence(text: &str) -> String {
 
 /// The HTML line that opens or closes a div: the cross-reference hook for a
 /// labelled div, then the generic one.
-fn div_html(div: &Div, ctx: &mut Context, opening: bool) -> Option<String> {
+fn div_html(div: &Div, lines: &[&str], ctx: &mut Context, opening: bool) -> Option<String> {
     let labelled = if refs::wants(div) {
         if opening {
             refs::div_open(div, ctx)
@@ -477,7 +474,7 @@ fn div_html(div: &Div, ctx: &mut Context, opening: bool) -> Option<String> {
     };
     labelled.or_else(|| {
         if opening {
-            divs::open(div, ctx)
+            divs::open(div, lines, ctx)
         } else {
             divs::close(div, ctx)
         }
@@ -514,6 +511,7 @@ pub fn draft(
         refs: &references,
         files,
         strings: &extras.strings,
+        for_pandoc,
         diagnostics: Vec::new(),
     };
     let mut out = Out::default();
@@ -590,19 +588,26 @@ pub fn draft(
                 if fence_closes(line, ch, len) {
                     opaque = None;
                 }
-            } else if let Some((ch, len, _)) = fence_open(line) {
+            } else if let Some((ch, len, info)) = fence_open(line) {
+                // `{=html}` and the other raw blocks (g7cv).
+                if !for_pandoc {
+                    if let Some(end) = shortcodes::raw_block(&lines, i, (ch, len), info, &mut out) {
+                        i = end + 1;
+                        continue;
+                    }
+                }
                 opaque = Some((ch, len));
                 out.push(line, mapped, (i, i));
             } else if let Some(&n) = div_opens.get(&i) {
                 // The fence becomes an HTML line; what follows is content.
                 let div = &parsed.divs[n];
-                if let Some(html) = div_html(div, &mut ctx, true) {
+                if let Some(html) = div_html(div, &lines, &mut ctx, true) {
                     out.block(&html, (div.start, div.end.unwrap_or(last_line)));
                 }
                 open_divs.push(n);
             } else if let Some(&n) = div_closes.get(&i) {
                 let div = &parsed.divs[n];
-                if let Some(html) = div_html(div, &mut ctx, false) {
+                if let Some(html) = div_html(div, &lines, &mut ctx, false) {
                     out.block(&html, (div.start, i));
                 }
                 open_divs.pop();
@@ -621,6 +626,17 @@ pub fn draft(
                 out.push(line, Some(i), (i, i));
                 out.push(&fence, None, (i, i));
             } else {
+                // A div may rewrite its own content lines (a callout's title
+                // heading, the headings that start tabs).
+                if let Some(&n) = open_divs.last() {
+                    if let Some(html) = divs::content_line(&parsed.divs[n], &lines, i, &mut ctx) {
+                        if !html.is_empty() {
+                            out.block(&html, (i, i));
+                        }
+                        i += 1;
+                        continue;
+                    }
+                }
                 let site = Site {
                     depth: 0,
                     seen: &[],
@@ -651,7 +667,7 @@ pub fn draft(
     // A div that is never closed is closed at the end of the file.
     while let Some(n) = open_divs.pop() {
         let div = &parsed.divs[n];
-        if let Some(html) = div_html(div, &mut ctx, false) {
+        if let Some(html) = div_html(div, &lines, &mut ctx, false) {
             out.block(&html, (div.start, last_line));
         }
     }
