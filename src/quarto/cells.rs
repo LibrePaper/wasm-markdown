@@ -227,10 +227,20 @@ fn show_code(cell: &Cell, ctx: &Context, out: &mut Out) {
 
 /// The saved output with its line breaks kept (`<pre>` needs them), and every
 /// empty line an HTML comment, so a CommonMark HTML block does not end there.
+/// Nothing else is touched: the text of a `<pre>` reaches the page as saved.
 fn keep_one_block(html: &str) -> String {
     html.replace("\r\n", "\n")
         .split('\n')
-        .map(|l| if l.trim().is_empty() { "<!-- -->" } else { l })
+        .map(|l| {
+            if l.is_empty() {
+                "<!-- -->".to_string()
+            } else if l.trim().is_empty() {
+                // Spaces and tabs on an otherwise empty line are the output's.
+                format!("{l}<!-- -->")
+            } else {
+                l.to_string()
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }

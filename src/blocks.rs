@@ -351,4 +351,70 @@ mod tests {
         );
         assert_eq!(blocks.diagnostics[0].message, "quarto_div_unfinished");
     }
+
+    /// The text of the one `<pre><code>` in the cell output of a block, as the
+    /// browser shows it: comments dropped, entities decoded.
+    fn shown_text(html: &str) -> String {
+        let start = html.find("<pre><code>").expect("a pre") + "<pre><code>".len();
+        let end = html[start..].find("</code></pre>").expect("its end") + start;
+        let mut text = html[start..end].to_string();
+        while let Some(a) = text.find("<!--") {
+            let b = text[a..].find("-->").unwrap() + a + 3;
+            text.replace_range(a..b, "");
+        }
+        text.replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&amp;", "&")
+    }
+
+    fn escaped(text: &str) -> String {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    }
+
+    fn output_text(saved: &str) -> String {
+        let source = "```{r}\nx()\n```\n";
+        let json = serde_json::json!({"outputs": [{
+            "line": 1,
+            "html": format!("<pre><code>{}</code></pre>", escaped(saved)),
+        }]})
+        .to_string();
+        let files = move |p: &str| (p == ".librepaper/quarto.json").then(|| json.clone());
+        let blocks = run(source, "paper.qmd", &files);
+        let out: Vec<_> = blocks
+            .iter()
+            .filter(|b| b.html.contains("cell-outputs"))
+            .collect();
+        assert_eq!(out.len(), 1, "{blocks:?}");
+        shown_text(&out[0].html)
+    }
+
+    #[test]
+    fn saved_text_output_is_verbatim_data_frame() {
+        let text = "  statistic value\n1      Mean     5\n2 Sample size     4\n";
+        assert_eq!(output_text(text), text);
+    }
+
+    #[test]
+    fn saved_text_output_is_verbatim_summary_lm() {
+        let text = "\nCall:\nlm(formula = mpg ~ wt, data = mtcars)\n\nResiduals:\n    Min      1Q  Median      3Q     Max \n-4.5432 -2.3647 -0.1252  1.4096  6.8727 \n\nCoefficients:\n            Estimate Std. Error t value Pr(>|t|)    \n(Intercept)  37.2851     1.8776  19.858  < 2e-16 ***\nwt           -5.3445     0.5591  -9.559 1.29e-10 ***\n---\nSignif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1\n\nResidual standard error: 3.046 on 30 degrees of freedom\n   \n\n";
+        assert_eq!(output_text(text), text);
+    }
+
+    #[test]
+    fn saved_text_output_is_verbatim_tabs_unicode_long_and_trailing_newline() {
+        for text in [
+            "a\tb\t\tc\n\tindented\n",
+            "\u{3b2}\u{302} = 0.42 \u{b1} 0.05 \u{2014} \u{2713}\n",
+            &format!("{}\n", "0123456789".repeat(30)),
+            "no trailing newline",
+            "one\n\n\ntwo\n\n",
+            "  leading spaces\n    more   runs   of   spaces  \n",
+        ] {
+            assert_eq!(output_text(text), text);
+        }
+    }
 }
