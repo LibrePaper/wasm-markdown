@@ -230,12 +230,12 @@ dependencies = [
 
 [[package]]
 name = "wasm-helpers"
-version = "0.3.2"
-source = "git+https://github.com/LibrePaper/wasm-helpers?tag=v0.3.2#e66ac5ec847de650ed6156c5cd20516c357859bd"
+version = "0.3.3"
+source = "git+https://github.com/LibrePaper/wasm-helpers?tag=v0.3.3#5fcbca871980139441b77a0d4588917897bf13c6"
 
 [[package]]
 name = "wasm-markdown"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "comrak",
  "serde_json",
