@@ -134,6 +134,7 @@ struct Image {
     src: String,
     alt: String,
     fig_alt: String,
+    fig_link: String,
     width: String,
     height: String,
     align: String,
@@ -279,11 +280,20 @@ impl Refs {
         } else {
             format!(" style=\"{}\"", escape(&style.join(";")))
         };
-        format!(
-            "<figure class=\"{class}\" id=\"{id}\"><img src=\"{src}\" alt=\"{alt}\"{style}>{caption}</figure>",
-            id = escape(&img.id),
+        let image = format!(
+            "<img src=\"{src}\" alt=\"{alt}\"{style}>",
             src = escape(&img.src),
             alt = escape(&alt),
+        );
+        // `fig-link` wraps the image in a link.
+        let image = if img.fig_link.is_empty() {
+            image
+        } else {
+            format!("<a href=\"{}\">{image}</a>", escape(&img.fig_link))
+        };
+        format!(
+            "<figure class=\"{class}\" id=\"{id}\">{image}{caption}</figure>",
+            id = escape(&img.id),
             caption = self.figcaption(&img.id, &img.alt),
         )
     }
@@ -643,6 +653,7 @@ fn parse_image(line: &str) -> Option<Image> {
         src: destination.to_string(),
         alt: alt.to_string(),
         fig_alt: text("fig-alt"),
+        fig_link: text("fig-link"),
         width: css_length(text("width")),
         height: css_length(text("height")),
         align: text("fig-align"),
@@ -887,7 +898,26 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
     }
 
     // Headings: section numbers, anchors, the contents.
-    let number_sections = get(meta, "number-sections").is_some_and(|y| y.truthy());
+    // `number-offset` (a number or a list) implies `number-sections`; the
+    // counters start at the offsets, as Pandoc's do.
+    let offsets: Vec<usize> = match get(meta, "number-offset") {
+        Some(Yaml::Num(n)) => vec![n.max(0.0) as usize],
+        Some(Yaml::List(items)) => items
+            .iter()
+            .map(|y| match y {
+                Yaml::Num(n) => n.max(0.0) as usize,
+                _ => 0,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let number_sections =
+        get(meta, "number-sections").is_some_and(|y| y.truthy()) || !offsets.is_empty();
+    // `shift-heading-level-by` moves every heading, clamped to 1..6.
+    let shift = match get(meta, "shift-heading-level-by") {
+        Some(Yaml::Num(n)) => *n as i64,
+        _ => 0,
+    };
     let depth_limit = match get(meta, "number-depth") {
         Some(Yaml::Num(n)) if *n >= 1.0 => *n as usize,
         _ => usize::MAX,
@@ -934,7 +964,11 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
                     .map(|_| usize::MAX)
             })
     };
-    let mut counters = [0usize; 6];
+    let mut start_counters = [0usize; 6];
+    for (slot, offset) in start_counters.iter_mut().zip(&offsets) {
+        *slot = *offset;
+    }
+    let mut counters = start_counters;
     let mut region: Option<usize> = None;
     let mut appendix_level = base;
     let mut anchorizer = comrak::Anchorizer::new();
@@ -944,7 +978,7 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
         let key = region_of(*line);
         if key != region {
             region = key;
-            counters = [0; 6];
+            counters = if key.is_some() { [0; 6] } else { start_counters };
             appendix_level = h.level;
         }
         let appendix = key.is_some();
@@ -997,10 +1031,10 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
             *line,
             Heading {
                 raw: lines[*line].to_string(),
-                level: h.level,
+                level: (h.level as i64 + shift).clamp(1, 6) as usize,
                 title: h.title.clone(),
                 id: h.id.clone(),
-                decorate: h.has_attrs || number.is_some(),
+                decorate: h.has_attrs || number.is_some() || shift != 0,
                 number,
             },
         );
@@ -1390,6 +1424,38 @@ fn pandoc_line(i: usize, lines: &[&str], ctx: &mut Context, out: &mut Out) -> Op
 #[cfg(test)]
 mod tests {
     use crate::quarto::tests::{compose, no_files};
+
+    #[test]
+    fn fig_link_wraps_the_image_and_fig_alt_is_its_alt() {
+        let d = compose("![Cap](a.png){#fig-a fig-link=\"https://x.org/a\" fig-alt=\"Alt\"}\n").markdown;
+        assert!(
+            d.contains("<a href=\"https://x.org/a\"><img src=\"a.png\" alt=\"Alt\"></a>"),
+            "{d}"
+        );
+    }
+
+    #[test]
+    fn shift_heading_level_moves_headings_and_clamps() {
+        let d = compose("---\nshift-heading-level-by: 1\n---\n\n# One\n\n###### Deep\n").markdown;
+        assert!(d.contains("\n## One\n"), "{d}");
+        assert!(d.contains("\n###### Deep\n"), "{d}");
+    }
+
+    #[test]
+    fn number_offset_starts_the_counters_and_implies_numbering() {
+        let d = compose("---\nnumber-offset: [5, 2]\n---\n\n# One\n\n## Sub\n").markdown;
+        assert!(d.contains("data-number=\"6\""), "{d}");
+        assert!(d.contains("data-number=\"6.1\""), "{d}");
+        let d = compose("---\nnumber-offset: 5\n---\n\n# One\n").markdown;
+        assert!(d.contains("data-number=\"6\""), "{d}");
+    }
+
+    #[test]
+    fn unlisted_headings_stay_out_of_the_contents() {
+        let d = compose("---\ntoc: true\n---\n\n# One\n\n# Two {.unlisted}\n").markdown;
+        assert!(d.contains("href=\"#one\""), "{d}");
+        assert!(!d.contains("href=\"#two\""), "{d}");
+    }
 
     fn assert_has(draft: &str, expected: &str) {
         assert!(

@@ -574,6 +574,70 @@ fn include(ctx: &mut Context, name: &str, site: &Site) -> String {
     out.join("\n")
 }
 
+/// `{{< contents id >}}` alone on a line: the element `::: {#id}` moves
+/// there, and leaves the place where it stood. Done on the expanded lines,
+/// before the parse, so the rest of the draft sees the new order. Only a div
+/// is moved (not a heading or a figure), and a shortcode inside the div it
+/// names is left alone.
+pub(crate) fn move_contents(expanded: &mut super::includes::Expanded) {
+    if !expanded.lines.iter().any(|l| l.contains("{{<")) {
+        return;
+    }
+    let target = |line: &str| -> Option<String> {
+        let t = line.trim().strip_prefix("{{<")?.strip_suffix(">}}")?.trim();
+        let id = t.strip_prefix("contents")?;
+        if !id.starts_with(char::is_whitespace) {
+            return None;
+        }
+        let id = id.trim().trim_matches(|c| c == '"' || c == '\'');
+        (!id.is_empty() && !id.contains(char::is_whitespace)).then(|| id.to_string())
+    };
+    if !expanded.lines.iter().any(|l| target(l).is_some()) {
+        return;
+    }
+    let refs: Vec<&str> = expanded.lines.iter().map(String::as_str).collect();
+    let parsed = parse(&refs);
+    let first = parsed.fm.lines;
+    // The line range of the div that carries each wanted id.
+    let range_of = |id: &str, at: usize| {
+        parsed
+            .divs
+            .iter()
+            .find(|d| d.id == id)
+            .and_then(|d| d.end.map(|end| (d.start, end)))
+            .filter(|&(start, end)| at < start || at > end)
+    };
+    let mut moves: Vec<(usize, (usize, usize))> = Vec::new();
+    for (i, line) in refs.iter().enumerate().skip(first) {
+        if let Some(range) = target(line).and_then(|id| range_of(&id, i)) {
+            moves.push((i, range));
+        }
+    }
+    if moves.is_empty() {
+        return;
+    }
+    let moved = |i: usize| moves.iter().any(|(_, (a, b))| (*a..=*b).contains(&i));
+    let mut lines: Vec<String> = Vec::with_capacity(expanded.lines.len());
+    let mut origin = Vec::with_capacity(expanded.lines.len());
+    for i in 0..expanded.lines.len() {
+        if let Some((_, (a, b))) = moves.iter().find(|(at, _)| *at == i) {
+            lines.push(String::new());
+            origin.push(expanded.origin[i].clone());
+            for j in *a..=*b {
+                lines.push(expanded.lines[j].clone());
+                origin.push(expanded.origin[j].clone());
+            }
+            lines.push(String::new());
+            origin.push(expanded.origin[i].clone());
+        } else if !moved(i) {
+            lines.push(expanded.lines[i].clone());
+            origin.push(expanded.origin[i].clone());
+        }
+    }
+    expanded.lines = lines;
+    expanded.origin = origin;
+}
+
 #[cfg(test)]
 mod tests {
     use crate::quarto::tests::{compose, with_files};
@@ -582,6 +646,19 @@ mod tests {
     fn html(source: &str) -> String {
         let d = compose(source);
         comrak::markdown_to_html(&d.markdown, &crate::markdown::quarto_options())
+    }
+
+    #[test]
+    fn contents_moves_the_div_to_the_shortcode() {
+        let d = html("Before.\n\n{{< contents later >}}\n\n::: {#later .box}\nMoved.\n:::\n\nAfter.\n");
+        let at = |s: &str| d.find(s).unwrap_or_else(|| panic!("{s} in {d}"));
+        assert!(at("Before.") < at("Moved.") && at("Moved.") < at("After."), "{d}");
+        assert_eq!(d.matches("Moved.").count(), 1, "{d}");
+        assert!(!d.contains("{{<"), "{d}");
+        // A div that does not exist leaves the shortcode as source.
+        assert!(compose("{{< contents nowhere >}}\n")
+            .markdown
+            .contains("{{< contents nowhere >}}"));
     }
 
     #[test]
