@@ -270,7 +270,8 @@ mod tests {
     #[test]
     fn a_saved_output_attaches_to_a_cell_in_a_nested_include() {
         let source = "{{< include chap/part.qmd >}}\n";
-        let read = |p: &str| (p == "chap/part.qmd").then(|| "Intro\n\n```{r}\nx <- 1\n```".to_string());
+        let read =
+            |p: &str| (p == "chap/part.qmd").then(|| "Intro\n\n```{r}\nx <- 1\n```".to_string());
         let extras = Extras::from_json(
             r#"{"outputs":[{"line":3,"path":"chap/part.qmd","html":"<p>NESTED</p>"}]}"#,
         );
