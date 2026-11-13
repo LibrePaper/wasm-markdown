@@ -79,6 +79,9 @@ fn render_draft(markdown: &str, options: &comrak::Options) -> Vec<Rendered> {
         at += found + text.len();
     }
     let mut out = Vec::new();
+    // A column-widths marker is a comment block of its own; it goes to the
+    // table after it.
+    let mut colwidths: Option<String> = None;
     if cuts.len() != limit + 1 {
         return out;
     }
@@ -95,14 +98,21 @@ fn render_draft(markdown: &str, options: &comrak::Options) -> Vec<Rendered> {
             _ => false,
         };
         let piece = html[cuts[n].1..cuts[n + 1].0].trim();
+        if skipped && piece.starts_with("<!-- lp-colwidths ") {
+            colwidths = Some(piece.to_string());
+        }
         if skipped || piece.is_empty() {
             continue;
         }
+        let piece = match colwidths.take() {
+            Some(marker) => markdown::colwidths(&format!("{marker}\n{piece}")),
+            None => piece.to_string(),
+        };
         let (start, end) = (ast.sourcepos.start.line, ast.sourcepos.end.line);
         out.push(Rendered {
             from: start,
             to: end.max(start),
-            html: piece.to_string(),
+            html: piece,
         });
     }
     out
@@ -189,6 +199,19 @@ mod tests {
 
     fn lines(blocks: &[Block]) -> Vec<(u64, u64)> {
         blocks.iter().map(|b| (b.from, b.to)).collect()
+    }
+
+    #[test]
+    fn a_wide_quarto_table_block_has_its_colgroup() {
+        let source = "| a | b |\n|---|---------|\n| 1 | this cell is long enough to push the whole row past the limit of seventy-two |\n";
+        let blocks = run(source, "main.qmd", &no_files);
+        assert_eq!(blocks.len(), 1);
+        assert!(
+            blocks[0].html.starts_with("<table><colgroup><col style=\"width:25.00%\">"),
+            "{}",
+            blocks[0].html
+        );
+        assert!(!blocks[0].html.contains("lp-colwidths"));
     }
 
     #[test]

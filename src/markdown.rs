@@ -121,7 +121,7 @@ fn render_quarto_with(source: &str, title: &str, assets: Resolve) -> String {
 
 /// Turns the draft's `<!-- lp-colwidths A B -->` markers into a `<colgroup>`
 /// in the table that follows each. A marker with no table after it is dropped.
-fn colwidths(html: &str) -> String {
+pub(crate) fn colwidths(html: &str) -> String {
     const OPEN: &str = "<!-- lp-colwidths ";
     let mut out = String::with_capacity(html.len());
     let mut rest = html;

@@ -100,7 +100,12 @@ fn caption_attrs(lines: &[&str], start: usize, end: usize) -> Option<Yaml> {
         below.filter(|&b| near(Some(b)) == Some("")).map(|b| b + 1),
     ];
     candidates.into_iter().find_map(|i| {
-        let rest = near(i)?.strip_prefix(':')?.trim();
+        let line = near(i)?;
+        // A div fence `::: {...}` is not a caption.
+        if div_fence(line).is_some() {
+            return None;
+        }
+        let rest = line.strip_prefix(':')?.trim();
         let at = rest.rfind('{').filter(|_| rest.ends_with('}'))?;
         get(&parse_attributes(&rest[at..]).attrs, "tbl-colwidths").cloned()
     })
