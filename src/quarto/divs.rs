@@ -667,10 +667,10 @@ mod tests {
         let d =
             compose("::: {.callout-important appearance=minimal icon=false}\nx\n:::\n").markdown;
         assert!(
-            d.contains("class=\"callout callout-important callout-minimal\""),
+            d.contains("class=\"callout callout-important callout-minimal no-icon\""),
             "{d}"
         );
-        assert!(!d.contains("icon"), "{d}");
+        assert!(!d.contains("icon="), "{d}");
     }
 
     #[test]

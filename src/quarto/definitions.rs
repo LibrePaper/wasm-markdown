@@ -31,10 +31,17 @@ fn bullet(line: &str) -> Option<(usize, &str)> {
     Some((indent, rest.trim()))
 }
 
+/// A line's index and its text.
+type Line = (usize, String);
+/// A term with the lines of its definitions.
+type Entry = (Line, Vec<Line>);
+/// A div to replace: its first and last line, and the lines it becomes.
+type Edit = (usize, usize, Vec<(String, usize)>);
+
 /// The terms and definitions of a div's content lines, each with the index of
 /// its first line, or none when the content is not exactly that shape.
-fn items(content: &[(usize, &str)]) -> Option<Vec<((usize, String), Vec<(usize, String)>)>> {
-    let mut out: Vec<((usize, String), Vec<(usize, String)>)> = Vec::new();
+fn items(content: &[(usize, &str)]) -> Option<Vec<Entry>> {
+    let mut out: Vec<Entry> = Vec::new();
     for &(at, line) in content {
         if line.trim().is_empty() {
             continue;
@@ -67,7 +74,7 @@ pub(crate) fn rewrite(expanded: &mut Expanded) {
     let refs: Vec<&str> = expanded.lines.iter().map(String::as_str).collect();
     let parsed = parse(&refs);
     // (first line, last line, replacement lines with the origin they take).
-    let mut edits: Vec<(usize, usize, Vec<(String, usize)>)> = Vec::new();
+    let mut edits: Vec<Edit> = Vec::new();
     for div in &parsed.divs {
         let Some(end) = div.end else { continue };
         if !div.classes.iter().any(|c| c == "definition-list") {
