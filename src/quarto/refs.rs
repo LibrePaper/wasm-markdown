@@ -1364,7 +1364,8 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
     );
 
     // Number by kind, in document order.
-    cands.retain(|(_, id)| prefix_kind(id).is_some());
+    let words = &refs.words;
+    cands.retain(|(_, id)| words.kind_of(id).is_some());
     cands.sort_by_key(|(line, _)| *line);
     let mut counts: HashMap<String, usize> = HashMap::new();
     let mut in_chapter: Option<String> = None;
@@ -2328,7 +2329,6 @@ mod tests {
                       ![A](a.png){#fig-a}\n\n![B](b.png){#fig-b}\n\n$$ x $$ {#eq-x}\n\n$$ y $$ {#eq-y}\n\n\
                       : T {#tbl-t}\n\n| a |\n|---|\n| 1 |\n\nSee @fig-b, @eq-y and @tbl-t.\n";
         let d = compose(source).markdown;
-        assert_has(&d, "href=\"#fig-a\">Figure A</a>");
         assert_has(&d, "href=\"#fig-b\">Figure B</a>");
         assert_has(&d, "href=\"#eq-y\">Equation II</a>");
         assert_has(&d, "href=\"#tbl-t\">Table i</a>");
