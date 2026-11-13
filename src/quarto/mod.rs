@@ -30,7 +30,8 @@
 //! - `divs.rs` -- the div tree, div markup and bracketed spans (44vp);
 //! - `refs.rs` -- cross-reference numbering, resolution, heading ids (r857);
 //! - `shortcodes.rs` -- include expansion and shortcodes by name (g7cv);
-//! - `includes.rs` -- block-level includes, spliced in before the parse;
+//! - `includes.rs` -- block-level includes, spliced in before the parse (b6y2);
+//! - `tables.rs` -- the relative column widths of pipe tables (875t);
 //! - `attrs.rs` -- the `{#id .class key=value}` parser, shared (scaffold,
 //!   mww4); read it, do not edit it.
 //!
@@ -49,6 +50,7 @@ mod includes;
 mod outputs;
 mod refs;
 mod shortcodes;
+mod tables;
 
 use std::collections::HashMap;
 
@@ -711,6 +713,7 @@ pub fn draft(
                         expanded = decorated;
                     }
                 }
+                tables::mark(&lines, i, &ctx, &mut out);
                 // Included text has no one-to-one source line.
                 out.push(&prose(&expanded, &mut ctx), mapped, (i, i));
             }

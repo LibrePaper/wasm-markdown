@@ -112,8 +112,39 @@ pub fn render_with(source: &str, title: &str, assets: Resolve) -> String {
 
 /// The same for a Quarto draft, with the Quarto options.
 fn render_quarto_with(source: &str, title: &str, assets: Resolve) -> String {
-    let body = rewrite_images(&comrak::markdown_to_html(source, &quarto_options()), assets);
+    let body = rewrite_images(
+        &colwidths(&comrak::markdown_to_html(source, &quarto_options())),
+        assets,
+    );
     page::page(title, "", &body)
+}
+
+/// Turns the draft's `<!-- lp-colwidths A B -->` markers into a `<colgroup>`
+/// in the table that follows each. A marker with no table after it is dropped.
+pub(crate) fn colwidths(html: &str) -> String {
+    const OPEN: &str = "<!-- lp-colwidths ";
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(at) = rest.find(OPEN) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + OPEN.len()..];
+        let Some(close) = after.find("-->") else {
+            rest = &rest[at..];
+            break;
+        };
+        let cols: String = after[..close]
+            .split_whitespace()
+            .map(|w| format!("<col style=\"width:{w}%\">"))
+            .collect();
+        rest = &after[close + 3..];
+        let tail = rest.trim_start();
+        if let Some(table) = tail.strip_prefix("<table>") {
+            out.push_str(&format!("<table><colgroup>{cols}</colgroup>"));
+            rest = table;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Points every relative `src` at what the host says is there, and leaves
@@ -319,6 +350,49 @@ mod tests {
         ] {
             assert!(html.contains(wanted), "{wanted} missing in {html}");
         }
+    }
+
+    fn quarto_html(source: &str) -> String {
+        let draft = crate::quarto::tests::compose(source).markdown;
+        colwidths(&comrak::markdown_to_html(&draft, &quarto_options()))
+    }
+
+    const LONG_TABLE: &str = "| a | b |\n|---|---------|\n| 1 | this cell is long enough to push the whole row past the limit of seventy-two |\n";
+
+    #[test]
+    fn a_short_quarto_table_has_no_colgroup() {
+        let html = quarto_html("| a | b |\n|---|---|\n| 1 | 2 |\n");
+        assert!(html.contains("<table>") && !html.contains("colgroup"), "{html}");
+        assert!(!html.contains("lp-colwidths"), "{html}");
+    }
+
+    #[test]
+    fn a_long_quarto_table_gets_proportional_columns() {
+        let html = quarto_html(LONG_TABLE);
+        assert!(
+            html.contains("<table><colgroup><col style=\"width:25.00%\"><col style=\"width:75.00%\"></colgroup>"),
+            "{html}"
+        );
+        assert!(!html.contains("lp-colwidths"), "{html}");
+    }
+
+    #[test]
+    fn a_captioned_quarto_table_keeps_its_figure_and_gets_columns() {
+        let html = quarto_html(&format!("{LONG_TABLE}\n: Caption {{#tbl-x}}\n"));
+        let figure = html.find("<figure").expect(&html);
+        let cols = html.find("<colgroup>").expect(&html);
+        assert!(figure < cols && html.contains("</figure>"), "{html}");
+    }
+
+    #[test]
+    fn a_marker_without_a_table_is_dropped() {
+        assert_eq!(colwidths("<p>x</p>\n<!-- lp-colwidths 50.00 50.00 -->\n<p>y</p>"), "<p>x</p>\n\n<p>y</p>");
+    }
+
+    #[test]
+    fn plain_markdown_tables_get_no_colgroup() {
+        let html = render_body(LONG_TABLE);
+        assert!(!html.contains("colgroup"), "{html}");
     }
 
     #[test]
