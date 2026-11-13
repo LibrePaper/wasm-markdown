@@ -1341,6 +1341,7 @@ pub(crate) fn line(i: usize, lines: &[&str], ctx: &mut Context, out: &mut Out) -
             Item::Equation { id, tex } => out.block(&refs.equation_html(id, tex), origin),
             Item::Table { id, caption, rows } => {
                 out.block(&refs.table_open(id, caption), origin);
+                super::tables::mark(lines, rows.start, ctx, out);
                 for l in rows.clone() {
                     let text = prose(lines[l], ctx);
                     out.push(&text, Some(l), (l, l));
