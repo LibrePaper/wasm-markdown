@@ -254,12 +254,28 @@ mod tests {
         let extras = Extras::from_json(r#"{"outputs":[{"line":3,"html":"<p>OUT</p>"}]}"#);
         let d = draft(source, "main.qmd", &read, &extras, false);
         assert!(d.markdown.contains("<p>OUT</p>"), "{}", d.markdown);
-        // A cell in an included file has no saved output.
+        // A cell in an included file takes the output that names its file.
         let source = "{{< include part.qmd >}}\n";
         let read = |p: &str| (p == "part.qmd").then(|| "```{r}\nx <- 1\n```".to_string());
-        let extras = Extras::from_json(r#"{"outputs":[{"line":1,"html":"<p>OUT</p>"}]}"#);
-        let d = draft(source, "main.qmd", &read, &extras, false);
+        let on = |json: &str| draft(source, "main.qmd", &read, &Extras::from_json(json), false);
+        let d = on(r#"{"outputs":[{"line":1,"path":"part.qmd","html":"<p>OUT</p>"}]}"#);
+        assert!(d.markdown.contains("<p>OUT</p>"), "{}", d.markdown);
+        // No path means the main file, whose line 1 is the include itself.
+        let d = on(r#"{"outputs":[{"line":1,"html":"<p>OUT</p>"}]}"#);
         assert!(!d.markdown.contains("<p>OUT</p>"), "{}", d.markdown);
+        let d = on(r#"{"outputs":[{"line":1,"path":"other.qmd","html":"<p>OUT</p>"}]}"#);
+        assert!(!d.markdown.contains("<p>OUT</p>"), "{}", d.markdown);
+    }
+
+    #[test]
+    fn a_saved_output_attaches_to_a_cell_in_a_nested_include() {
+        let source = "{{< include chap/part.qmd >}}\n";
+        let read = |p: &str| (p == "chap/part.qmd").then(|| "Intro\n\n```{r}\nx <- 1\n```".to_string());
+        let extras = Extras::from_json(
+            r#"{"outputs":[{"line":3,"path":"chap/part.qmd","html":"<p>NESTED</p>"}]}"#,
+        );
+        let d = draft(source, "main.qmd", &read, &extras, false);
+        assert!(d.markdown.contains("<p>NESTED</p>"), "{}", d.markdown);
     }
 
     #[test]

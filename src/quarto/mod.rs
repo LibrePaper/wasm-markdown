@@ -353,8 +353,12 @@ pub struct Extras {
 
 #[derive(Clone, Debug)]
 pub struct Output {
-    /// The 1-based line of the cell's opening fence in the main file.
+    /// The 1-based line of the cell's opening fence in its file.
     pub line: usize,
+    /// The project path of the file the cell is in; `None` for the main file.
+    /// Normalized like an include's: relative to the including file, `..` and
+    /// `.` resolved, forward slashes, no leading `./`.
+    pub path: Option<String>,
     pub html: String,
     pub stale: bool,
 }
@@ -411,6 +415,11 @@ impl Extras {
                 if let (true, Some(html)) = (line > 0, html) {
                     extras.outputs.push(Output {
                         line,
+                        path: item
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .filter(|p| !p.is_empty())
+                            .map(str::to_string),
                         html: html.to_string(),
                         stale: item.get("stale").and_then(|v| v.as_bool()).unwrap_or(false),
                     });
@@ -615,12 +624,17 @@ pub fn draft(
             if option(&cell.options, &defaults, "include") == Some(&Yaml::Bool(false)) {
                 continue;
             }
-            // A cell of an included file has no saved output.
+            // An output names its file: no path is the main file, otherwise
+            // the normalized path of the included file the cell is in.
             let at = &origin[cell.start];
-            if !at.main {
-                continue;
-            }
-            if let Some(o) = extras.outputs.iter().find(|o| o.line == at.line + 1) {
+            let found = extras.outputs.iter().find(|o| {
+                o.line == at.line + 1
+                    && match &o.path {
+                        None => at.main,
+                        Some(p) => !at.main && *p == at.file,
+                    }
+            });
+            if let Some(o) = found {
                 outputs.insert(cell.start, o);
             }
         }
