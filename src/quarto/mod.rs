@@ -510,7 +510,7 @@ pub(crate) fn verbatim_fence(text: &str) -> String {
 /// The HTML line that opens or closes a div: the cross-reference hook for a
 /// labelled div, then the generic one.
 fn div_html(div: &Div, lines: &[&str], ctx: &mut Context, opening: bool) -> Option<String> {
-    let labelled = if refs::wants(div) {
+    let labelled = if refs::wants(div, ctx) {
         if opening {
             refs::div_open(div, ctx)
         } else {
@@ -708,7 +708,7 @@ pub fn draft(
                     line: at.line + 1,
                 };
                 let mut expanded = shortcodes::expand_line(line, &mut ctx, &site);
-                if refs::is_heading(&expanded) {
+                if refs::is_heading_at(&expanded, i, &ctx) {
                     if let Some(decorated) = refs::decorate_heading(&expanded, i, &mut ctx) {
                         expanded = decorated;
                     }

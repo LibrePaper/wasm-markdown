@@ -272,11 +272,17 @@ fn capitalised(word: &str) -> String {
         .unwrap_or_default()
 }
 
-fn callout_open(div: &Div, kind: &str, lines: &[&str]) -> String {
-    let title = attr_text(&div.attrs, "title")
+fn callout_open(div: &Div, kind: &str, lines: &[&str], ctx: &Context) -> String {
+    let given = attr_text(&div.attrs, "title")
         .or_else(|| leading_heading(div, lines).map(|h| h.1))
-        .filter(|t| !t.trim().is_empty())
-        .unwrap_or_else(|| capitalised(kind));
+        .filter(|t| !t.trim().is_empty());
+    // A callout with an id like `nte-x` is numbered: `Note 1`, then the title.
+    let title = match (ctx.refs.callout_label(&div.id), given) {
+        (Some(label), Some(t)) => format!("{label}{} {t}", ctx.refs.title_delimiter()),
+        (Some(label), None) => label,
+        (None, Some(t)) => t,
+        (None, None) => capitalised(kind),
+    };
     let mut classes = vec!["callout".to_string(), format!("callout-{kind}")];
     match attr_text(&div.attrs, "appearance").as_deref() {
         Some("simple") => classes.push("callout-simple".into()),
@@ -307,9 +313,9 @@ fn callout_open(div: &Div, kind: &str, lines: &[&str]) -> String {
 /// The raw HTML line that opens a div, or none to emit nothing. `lines` are
 /// the source lines of the document, for the features that read the div's
 /// content (a callout's heading, the tabs of a tabset).
-pub(crate) fn open(div: &Div, lines: &[&str], _ctx: &mut Context) -> Option<String> {
+pub(crate) fn open(div: &Div, lines: &[&str], ctx: &mut Context) -> Option<String> {
     if let Some(kind) = callout_kind(div) {
-        return Some(callout_open(div, kind, lines));
+        return Some(callout_open(div, kind, lines, ctx));
     }
     if is_margin(div) {
         let classes: Vec<String> = std::iter::once("margin".to_string())
