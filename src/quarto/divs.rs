@@ -293,7 +293,8 @@ fn callout_open(div: &Div, kind: &str, lines: &[&str], ctx: &Context) -> String 
         Some("minimal") => classes.push("callout-minimal".into()),
         _ => {}
     }
-    let icon = attr_text(&div.attrs, "icon").or_else(|| get(ctx.meta, "callout-icon").map(|v| v.text()));
+    let icon =
+        attr_text(&div.attrs, "icon").or_else(|| get(ctx.meta, "callout-icon").map(|v| v.text()));
     if icon.as_deref() == Some("false") {
         classes.push("no-icon".into());
     }
@@ -553,7 +554,10 @@ mod tests {
     fn callout_defaults_come_from_the_front_matter() {
         let front = "---\ncallout-appearance: simple\ncallout-icon: false\n---\n\n";
         let d = compose(&format!("{front}::: {{.callout-note}}\nA\n:::\n")).markdown;
-        assert!(d.contains("callout callout-note callout-simple no-icon"), "{d}");
+        assert!(
+            d.contains("callout callout-note callout-simple no-icon"),
+            "{d}"
+        );
         let d = compose(&format!(
             "{front}::: {{.callout-note appearance=minimal icon=true}}\nA\n:::\n"
         ))

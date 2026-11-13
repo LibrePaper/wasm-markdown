@@ -650,9 +650,13 @@ mod tests {
 
     #[test]
     fn contents_moves_the_div_to_the_shortcode() {
-        let d = html("Before.\n\n{{< contents later >}}\n\n::: {#later .box}\nMoved.\n:::\n\nAfter.\n");
+        let d =
+            html("Before.\n\n{{< contents later >}}\n\n::: {#later .box}\nMoved.\n:::\n\nAfter.\n");
         let at = |s: &str| d.find(s).unwrap_or_else(|| panic!("{s} in {d}"));
-        assert!(at("Before.") < at("Moved.") && at("Moved.") < at("After."), "{d}");
+        assert!(
+            at("Before.") < at("Moved.") && at("Moved.") < at("After."),
+            "{d}"
+        );
         assert_eq!(d.matches("Moved.").count(), 1, "{d}");
         assert!(!d.contains("{{<"), "{d}");
         // A div that does not exist leaves the shortcode as source.

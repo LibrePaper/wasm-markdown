@@ -135,8 +135,8 @@ mod tests {
         let d = compose("::: {.content-visible unless-format=\"html\"}\nPDF only\n:::\n\nAfter\n")
             .markdown;
         assert!(!d.contains("PDF only") && d.contains("After"), "{d}");
-        let d = compose("::: {.content-visible when-format=\"html\" .keep}\nWeb text\n:::\n")
-            .markdown;
+        let d =
+            compose("::: {.content-visible when-format=\"html\" .keep}\nWeb text\n:::\n").markdown;
         assert!(d.contains("Web text") && !d.contains("<div"), "{d}");
     }
 

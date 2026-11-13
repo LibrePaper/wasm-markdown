@@ -543,7 +543,10 @@ fn affiliations_in(value: &Yaml, known: &[Yaml]) -> Vec<Affiliation> {
             Some(r) => by_id(r.text().trim()).into_iter().collect(),
             None => affiliation_of(m).into_iter().collect(),
         },
-        Yaml::List(items) => items.iter().flat_map(|i| affiliations_in(i, known)).collect(),
+        Yaml::List(items) => items
+            .iter()
+            .flat_map(|i| affiliations_in(i, known))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -743,10 +746,7 @@ pub(crate) fn title_block(ctx: &Context) -> String {
         out.push_str(&format!("<p class=\"subtitle\">{}</p>", escape(&subtitle)));
     }
     if !people.is_empty() {
-        let shown: Vec<String> = people
-            .iter()
-            .map(|p| person_html(p, ctx.strings))
-            .collect();
+        let shown: Vec<String> = people.iter().map(|p| person_html(p, ctx.strings)).collect();
         out.push_str(&format!("<p class=\"author\">{}</p>", shown.join(", ")));
     }
     if !affiliations.is_empty() {
@@ -849,7 +849,11 @@ pub(crate) fn appendix(ctx: &Context) -> String {
         let html = match license {
             Yaml::Str(s) if !s.trim().is_empty() => match creative_commons(s, &lang) {
                 Some((text, url)) => {
-                    format!("<a rel=\"license\" href=\"{}\">{}</a>", escape(&url), escape(&text))
+                    format!(
+                        "<a rel=\"license\" href=\"{}\">{}</a>",
+                        escape(&url),
+                        escape(&text)
+                    )
                 }
                 None => escape(s.trim()),
             },
@@ -1126,14 +1130,22 @@ mod tests {
     fn authors_carry_links_degrees_email_and_orcid() {
         let source = "---\ntitle: T\nauthor:\n  - name: Ada Lovelace\n    url: https://ada.example\n    email: ada@x.org\n    orcid: 0000-0001-2345-6789\n    degrees:\n      - PhD\n      - MSc\n    corresponding: true\n  - name:\n      given: Grace\n      family: Hopper\n    email: grace@x.org\n  - Plain Person\n---\n";
         let d = compose(source).markdown;
-        assert!(d.contains("<a href=\"https://ada.example\">Ada Lovelace</a>, PhD, MSc"), "{d}");
+        assert!(
+            d.contains("<a href=\"https://ada.example\">Ada Lovelace</a>, PhD, MSc"),
+            "{d}"
+        );
         assert!(d.contains(
             "<a href=\"mailto:ada@x.org\" class=\"quarto-title-author-email corresponding\" aria-label=\"Corresponding author\""
         ), "{d}");
         assert!(d.contains(
             "<a href=\"https://orcid.org/0000-0001-2345-6789\" class=\"quarto-title-author-orcid\" aria-label=\"ORCID profile for Ada Lovelace\"><svg"
         ), "{d}");
-        assert!(d.contains("Grace Hopper <a href=\"mailto:grace@x.org\" class=\"quarto-title-author-email\">"), "{d}");
+        assert!(
+            d.contains(
+                "Grace Hopper <a href=\"mailto:grace@x.org\" class=\"quarto-title-author-email\">"
+            ),
+            "{d}"
+        );
         assert!(d.contains(", Plain Person</p>"), "{d}");
         // A list of plain strings keeps them in order.
         let d = compose("---\nauthor: [Ada, Grace]\n---\n").markdown;
@@ -1144,9 +1156,18 @@ mod tests {
     fn affiliations_are_inline_or_by_reference() {
         let source = "---\nauthor:\n  - name: Ada\n    affiliations:\n      - name: Engine Lab\n        department: Maths\n        url: https://lab.example\n  - name: Grace\n    affiliations:\n      - ref: navy\n  - name: Alan\n    affiliations: navy\naffiliations:\n  - id: navy\n    name: Navy\n---\n";
         let d = compose(source).markdown;
-        assert!(d.contains("Ada<sup class=\"affiliation-ref\">1</sup>"), "{d}");
-        assert!(d.contains("Grace<sup class=\"affiliation-ref\">2</sup>"), "{d}");
-        assert!(d.contains("Alan<sup class=\"affiliation-ref\">2</sup>"), "{d}");
+        assert!(
+            d.contains("Ada<sup class=\"affiliation-ref\">1</sup>"),
+            "{d}"
+        );
+        assert!(
+            d.contains("Grace<sup class=\"affiliation-ref\">2</sup>"),
+            "{d}"
+        );
+        assert!(
+            d.contains("Alan<sup class=\"affiliation-ref\">2</sup>"),
+            "{d}"
+        );
         assert!(d.contains(
             "<span class=\"affiliation\"><sup>1</sup> <a href=\"https://lab.example\">Maths, Engine Lab</a></span> <span class=\"affiliation\"><sup>2</sup> Navy</span>"
         ), "{d}");
@@ -1163,24 +1184,41 @@ mod tests {
     #[test]
     fn licenses_link_to_creative_commons() {
         let d = compose("---\nlicense: CC BY\n---\n\nBody\n").markdown;
-        assert!(d.contains("<h2 class=\"anchored quarto-appendix-heading\">Reuse</h2>"), "{d}");
+        assert!(
+            d.contains("<h2 class=\"anchored quarto-appendix-heading\">Reuse</h2>"),
+            "{d}"
+        );
         assert!(d.contains(
             "<a rel=\"license\" href=\"https://creativecommons.org/licenses/by/4.0/\">CC BY 4.0</a>"
         ), "{d}");
         assert!(d.rfind("quarto-reuse") > d.rfind("Body"), "{d}");
         let d = compose("---\nlicense: CC BY-NC-ND 3.0\n---\n").markdown;
-        assert!(d.contains("href=\"https://creativecommons.org/licenses/by-nc-nd/3.0/\">CC BY-NC-ND 3.0</a>"), "{d}");
+        assert!(
+            d.contains(
+                "href=\"https://creativecommons.org/licenses/by-nc-nd/3.0/\">CC BY-NC-ND 3.0</a>"
+            ),
+            "{d}"
+        );
         let d = compose("---\nlicense: cc by-sa\n---\n").markdown;
         assert!(d.contains("licenses/by-sa/4.0/\">CC BY-SA 4.0</a>"), "{d}");
         let d = compose("---\nlang: fr\nlicense: CC BY\n---\n").markdown;
         assert!(d.contains("licenses/by/4.0/deed.fr\""), "{d}");
         // Other text is shown as written; a map keeps its text and link.
         let d = compose("---\nlicense: All rights reserved\n---\n").markdown;
-        assert!(d.contains("<div class=\"license\">All rights reserved</div>"), "{d}");
-        let d = compose("---\nlicense:\n  type: open\n  text: My terms\n  link: https://terms.example\n---\n").markdown;
-        assert!(d.contains(
-            "My terms <a rel=\"license\" href=\"https://terms.example\">(View License)</a>"
-        ), "{d}");
+        assert!(
+            d.contains("<div class=\"license\">All rights reserved</div>"),
+            "{d}"
+        );
+        let d = compose(
+            "---\nlicense:\n  type: open\n  text: My terms\n  link: https://terms.example\n---\n",
+        )
+        .markdown;
+        assert!(
+            d.contains(
+                "My terms <a rel=\"license\" href=\"https://terms.example\">(View License)</a>"
+            ),
+            "{d}"
+        );
         let d = compose("---\nlicense:\n  - CC BY\n  - CC BY-SA\n---\n").markdown;
         assert!(d.contains("by/4.0/") && d.contains("by-sa/4.0/"), "{d}");
     }
@@ -1188,7 +1226,10 @@ mod tests {
     #[test]
     fn copyright_ends_the_document_in_an_appendix() {
         let d = compose("---\ncopyright: Ada 2026\n---\n\nBody\n").markdown;
-        assert!(d.contains("<h2 class=\"anchored quarto-appendix-heading\">Copyright</h2>"), "{d}");
+        assert!(
+            d.contains("<h2 class=\"anchored quarto-appendix-heading\">Copyright</h2>"),
+            "{d}"
+        );
         assert!(d.contains("<div>Ada 2026</div>"), "{d}");
         assert!(d.rfind("quarto-copyright") > d.rfind("Body"), "{d}");
         let d = compose("---\ncopyright:\n  holder: Ada\n  year: 2026\n---\n").markdown;

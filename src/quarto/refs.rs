@@ -111,7 +111,10 @@ impl Words {
         prefix_kind(id).map(str::to_string).or_else(|| {
             self.customs
                 .iter()
-                .find(|c| id.strip_prefix(c.key.as_str()).is_some_and(|r| r.starts_with('-')))
+                .find(|c| {
+                    id.strip_prefix(c.key.as_str())
+                        .is_some_and(|r| r.starts_with('-'))
+                })
                 .map(|c| c.key.clone())
         })
     }
@@ -154,7 +157,11 @@ impl Words {
     /// all, `fig-labels` and so on for one kind, `subref-labels` for
     /// subfigures. `chapter` is put in front.
     fn number(&self, kind: &str, n: usize, chapter: Option<&str>) -> String {
-        let default = if kind == "subref" { "alpha a" } else { "arabic" };
+        let default = if kind == "subref" {
+            "alpha a"
+        } else {
+            "arabic"
+        };
         let style = self
             .lookup(&format!("{kind}-labels"))
             .or_else(|| (kind != "subref").then(|| self.lookup("labels")).flatten())
@@ -215,7 +222,10 @@ fn roman(mut n: usize, lower: bool) -> String {
 fn custom_kinds(front: &[&str]) -> Vec<Custom> {
     let unquote = |v: &str| v.trim().trim_matches(['"', '\'']).to_string();
     let mut entries: Vec<Vec<(String, String)>> = Vec::new();
-    let Some(at) = front.iter().position(|l| l.trim_start().starts_with("custom:")) else {
+    let Some(at) = front
+        .iter()
+        .position(|l| l.trim_start().starts_with("custom:"))
+    else {
         return Vec::new();
     };
     let indent = front[at].len() - front[at].trim_start().len();
@@ -811,9 +821,8 @@ fn parse_setext(lines: &[&str], live: &[bool], front: usize, i: usize) -> Option
     if !live[i] || !live.get(i + 1).copied().unwrap_or(false) || !is_plain_paragraph(lines[i]) {
         return None;
     }
-    let after_gap = i <= front
-        || lines[i - 1].trim().is_empty()
-        || divs::div_fence(lines[i - 1]).is_some();
+    let after_gap =
+        i <= front || lines[i - 1].trim().is_empty() || divs::div_fence(lines[i - 1]).is_some();
     let t = under.trim_end();
     let lead = t.len() - t.trim_start().len();
     let t = t.trim_start();
@@ -1269,8 +1278,8 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
         if !live[i] || refs.skip.contains(&i) || consumed.contains(&i) {
             continue;
         }
-        let found = parse_heading(lines[i])
-            .or_else(|| parse_setext(lines, &live, parsed.fm.lines, i));
+        let found =
+            parse_heading(lines[i]).or_else(|| parse_setext(lines, &live, parsed.fm.lines, i));
         if let Some(h) = found {
             headings.push((i, h));
         }
@@ -1315,7 +1324,11 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
         let key = region_of(*line);
         if key != region {
             region = key;
-            counters = if key.is_some() { [0; 6] } else { start_counters };
+            counters = if key.is_some() {
+                [0; 6]
+            } else {
+                start_counters
+            };
             appendix_level = h.level;
             chapter_count = 0;
         }
@@ -1368,7 +1381,9 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
         }
         let toc_depth_of = h.level.saturating_sub(base) + 1;
         toc_rows.push(TocRow {
-            listed: toc_on && toc_depth_of <= toc_depth && !h.classes.iter().any(|c| c == "unlisted"),
+            listed: toc_on
+                && toc_depth_of <= toc_depth
+                && !h.classes.iter().any(|c| c == "unlisted"),
             depth: toc_depth_of,
             id: h.id.clone(),
             number: number.clone(),
@@ -1577,7 +1592,10 @@ fn heading_text(title: &str, refs: &Refs) -> String {
     let mut out = String::with_capacity(resolved.len());
     let mut chars = resolved.chars().peekable();
     while let Some(c) = chars.next() {
-        let tag = c == '<' && chars.peek().is_some_and(|n| n.is_ascii_alphabetic() || *n == '/');
+        let tag = c == '<'
+            && chars
+                .peek()
+                .is_some_and(|n| n.is_ascii_alphabetic() || *n == '/');
         if tag {
             for n in chars.by_ref() {
                 if n == '>' {
@@ -1873,18 +1891,18 @@ pub(crate) fn div_close(div: &Div, ctx: &mut Context) -> Option<String> {
     }
     let info = refs.divs.get(&div.start)?;
     match info.kind.as_str() {
-        kind if kind == "fig" || refs.is_custom(kind) => Some(match refs.cap_location(&div.attrs, "fig") {
-            CapLocation::Top => "</figure>".to_string(),
-            location => format!(
-                "{}</figure>",
-                refs.figcaption_in(&div.id, &info.caption, location)
-            ),
-        }),
-        "tbl" => Some(refs.table_close(
-            &div.id,
-            &info.caption,
-            refs.cap_location(&div.attrs, "tbl"),
-        )),
+        kind if kind == "fig" || refs.is_custom(kind) => {
+            Some(match refs.cap_location(&div.attrs, "fig") {
+                CapLocation::Top => "</figure>".to_string(),
+                location => format!(
+                    "{}</figure>",
+                    refs.figcaption_in(&div.id, &info.caption, location)
+                ),
+            })
+        }
+        "tbl" => {
+            Some(refs.table_close(&div.id, &info.caption, refs.cap_location(&div.attrs, "tbl")))
+        }
         _ => Some("</div>".to_string()),
     }
 }
@@ -2014,7 +2032,8 @@ mod tests {
 
     #[test]
     fn fig_link_wraps_the_image_and_fig_alt_is_its_alt() {
-        let d = compose("![Cap](a.png){#fig-a fig-link=\"https://x.org/a\" fig-alt=\"Alt\"}\n").markdown;
+        let d = compose("![Cap](a.png){#fig-a fig-link=\"https://x.org/a\" fig-alt=\"Alt\"}\n")
+            .markdown;
         assert!(
             d.contains("<a href=\"https://x.org/a\"><img src=\"a.png\" alt=\"Alt\"></a>"),
             "{d}"
@@ -2465,7 +2484,10 @@ mod tests {
     #[test]
     fn a_dash_gives_the_number_alone() {
         let d = compose(&format!("{TWO_FIGURES}See [-@fig-a] and -@fig-b.\n")).markdown;
-        assert_has(&d, &format!("See {} and {}.", link("fig-a", "1"), link("fig-b", "2")));
+        assert_has(
+            &d,
+            &format!("See {} and {}.", link("fig-a", "1"), link("fig-b", "2")),
+        );
     }
 
     #[test]
@@ -2479,13 +2501,24 @@ mod tests {
         let d = compose(&format!("{TWO_FIGURES}See [@fig-a; @fig-b].\n")).markdown;
         assert_has(
             &d,
-            &format!("See {}, {}.", link("fig-a", "Figure 1"), link("fig-b", "Figure 2")),
+            &format!(
+                "See {}, {}.",
+                link("fig-a", "Figure 1"),
+                link("fig-b", "Figure 2")
+            ),
         );
         let d = compose(&format!(
             "---\ncrossref:\n  ref-delim: ' and'\n---\n\n{TWO_FIGURES}See [@fig-a; @fig-b].\n"
         ))
         .markdown;
-        assert_has(&d, &format!("{} and {}", link("fig-a", "Figure 1"), link("fig-b", "Figure 2")));
+        assert_has(
+            &d,
+            &format!(
+                "{} and {}",
+                link("fig-a", "Figure 1"),
+                link("fig-b", "Figure 2")
+            ),
+        );
         // A group that is not all references is left to the citations.
         let d = compose(&format!("{TWO_FIGURES}See [@fig-a; @smith].\n")).markdown;
         assert_has(&d, "; @smith].");
@@ -2495,12 +2528,20 @@ mod tests {
     fn a_capital_makes_the_prefix_a_capital() {
         let source = "---\ncrossref:\n  fig-prefix: fig.\n---\n\n![A](a.png){#fig-a}\n\nSee @fig-a and @Fig-a.\n";
         let d = compose(source).markdown;
-        assert_has(&d, &format!("See {} and {}.", link("fig-a", "fig. 1"), link("fig-a", "Fig. 1")));
+        assert_has(
+            &d,
+            &format!(
+                "See {} and {}.",
+                link("fig-a", "fig. 1"),
+                link("fig-a", "Fig. 1")
+            ),
+        );
     }
 
     #[test]
     fn ref_hyperlink_false_leaves_the_text_alone() {
-        let source = "---\ncrossref:\n  ref-hyperlink: false\n---\n\n![A](a.png){#fig-a}\n\nSee @fig-a.\n";
+        let source =
+            "---\ncrossref:\n  ref-hyperlink: false\n---\n\n![A](a.png){#fig-a}\n\nSee @fig-a.\n";
         let d = compose(source).markdown;
         assert_has(&d, "See Figure 1.\n");
         assert!(!d.contains("href=\"#fig-a\">Figure"), "{d}");
@@ -2563,7 +2604,14 @@ mod tests {
         assert_has(&d, "<div class=\"callout-title\">Note 2. Named</div>");
         assert_has(&d, "<div class=\"callout-title\">Tip 1</div>");
         assert_has(&d, "id=\"nte-b\"");
-        assert_has(&d, &format!("See {} and {}.", link("nte-b", "Note 2"), link("tip-a", "Tip 1")));
+        assert_has(
+            &d,
+            &format!(
+                "See {} and {}.",
+                link("nte-b", "Note 2"),
+                link("tip-a", "Tip 1")
+            ),
+        );
         // Without an id a callout stays as it was.
         let d = compose("::: {.callout-note}\nx\n:::\n").markdown;
         assert_has(&d, "<div class=\"callout-title\">Note</div>");
@@ -2574,8 +2622,14 @@ mod tests {
         let source = "---\ncrossref:\n  custom:\n    - kind: float\n      key: vid\n      reference-prefix: Video\n      caption-prefix: Clip\n---\n\n\
                       ::: {#vid-a}\n<video src=\"a.mp4\"></video>\n\nThe first\n:::\n\n::: {#vid-b}\nx\n\nThe second\n:::\n\nSee @vid-b.\n";
         let d = compose(source).markdown;
-        assert_has(&d, "<figure class=\"figure custom-float float-vid\" id=\"vid-a\">");
-        assert_has(&d, "<span class=\"caption-label\">Clip 2.</span> The second");
+        assert_has(
+            &d,
+            "<figure class=\"figure custom-float float-vid\" id=\"vid-a\">",
+        );
+        assert_has(
+            &d,
+            "<span class=\"caption-label\">Clip 2.</span> The second",
+        );
         assert_has(&d, &format!("See {}.", link("vid-b", "Video 2")));
         let flow = "---\ncrossref:\n  custom: [{kind: float, key: vid, reference-prefix: Video}]\n---\n\n::: {#vid-a}\nx\n\nCap\n:::\n\nSee @vid-a.\n";
         let d = compose(flow).markdown;
@@ -2599,10 +2653,22 @@ mod tests {
     fn setext_headings_are_in_the_contents_and_take_their_number() {
         let source = "---\ntoc: true\nnumber-sections: true\n---\n\nFirst part\n==========\n\nBody.\n\nSecond part\n-----------\n\nMore.\n\n# Third\n";
         let d = compose(source).markdown;
-        assert_has(&d, "<a href=\"#first-part\"><span class=\"section-number\">1</span> First part</a>");
-        assert_has(&d, "<a href=\"#second-part\"><span class=\"section-number\">1.1</span> Second part</a>");
-        assert_has(&d, "\n# <span class=\"section-number\" data-number=\"1\"></span>First part\n");
-        assert!(!d.contains("==========") && !d.contains("-----------"), "{d}");
+        assert_has(
+            &d,
+            "<a href=\"#first-part\"><span class=\"section-number\">1</span> First part</a>",
+        );
+        assert_has(
+            &d,
+            "<a href=\"#second-part\"><span class=\"section-number\">1.1</span> Second part</a>",
+        );
+        assert_has(
+            &d,
+            "\n# <span class=\"section-number\" data-number=\"1\"></span>First part\n",
+        );
+        assert!(
+            !d.contains("==========") && !d.contains("-----------"),
+            "{d}"
+        );
         // Without numbers a setext heading is left as written.
         let d = compose("---\ntoc: true\n---\n\nTitle\n=====\n\n# Title\n").markdown;
         assert_has(&d, "Title\n=====\n");
@@ -2616,7 +2682,10 @@ mod tests {
         let d = compose("![Cap](p.png){#fig-a cap-location=top}\n").markdown;
         assert_has(&d, "id=\"fig-a\"><figcaption><span class=\"caption-label\">Figure 1.</span> Cap</figcaption><img");
         let d = compose("---\nfig-cap-location: margin\n---\n\n![Cap](p.png){#fig-a}\n").markdown;
-        assert_has(&d, "><img src=\"p.png\" alt=\"Cap\"><figcaption class=\"margin-caption\">");
+        assert_has(
+            &d,
+            "><img src=\"p.png\" alt=\"Cap\"><figcaption class=\"margin-caption\">",
+        );
         // A figure div: caption on top is written at the opening fence.
         let d = compose("::: {#fig-d cap-location=top}\n![](d.png)\n\nDiv caption\n:::\n").markdown;
         assert!(
@@ -2626,10 +2695,17 @@ mod tests {
         // A table keeps its caption on top, and moves it below on request.
         let table = "| a |\n|---|\n| 1 |\n\n: Results {#tbl-r}\n";
         let d = compose(table).markdown;
-        assert!(d.find("<figcaption").unwrap() < d.find("| a |").unwrap(), "{d}");
+        assert!(
+            d.find("<figcaption").unwrap() < d.find("| a |").unwrap(),
+            "{d}"
+        );
         let d = compose(&format!("---\ntbl-cap-location: bottom\n---\n\n{table}")).markdown;
-        assert!(d.find("<figcaption").unwrap() > d.find("| a |").unwrap(), "{d}");
-        let d = compose("::: {#tbl-x cap-location=margin}\n| a |\n|---|\n| 1 |\n\nCap\n:::\n").markdown;
+        assert!(
+            d.find("<figcaption").unwrap() > d.find("| a |").unwrap(),
+            "{d}"
+        );
+        let d =
+            compose("::: {#tbl-x cap-location=margin}\n| a |\n|---|\n| 1 |\n\nCap\n:::\n").markdown;
         assert_has(&d, "<figcaption class=\"margin-caption\">");
     }
 
@@ -2637,10 +2713,17 @@ mod tests {
     fn wide_column_classes_stay_on_figures_divs_and_come_from_options() {
         let d = compose("::: {.column-page}\nWide\n:::\n").markdown;
         assert_has(&d, "<div class=\"column-page\">");
-        let d = compose("::: {#fig-w .column-screen-inset-shaded}\n![](w.png)\n\nCap\n:::\n").markdown;
-        assert_has(&d, "<figure class=\"figure column-screen-inset-shaded\" id=\"fig-w\">");
+        let d =
+            compose("::: {#fig-w .column-screen-inset-shaded}\n![](w.png)\n\nCap\n:::\n").markdown;
+        assert_has(
+            &d,
+            "<figure class=\"figure column-screen-inset-shaded\" id=\"fig-w\">",
+        );
         let d = compose("---\nfig-column: page-right\n---\n\n![Cap](p.png){#fig-a}\n").markdown;
-        assert_has(&d, "<figure class=\"figure column-page-right\" id=\"fig-a\">");
+        assert_has(
+            &d,
+            "<figure class=\"figure column-page-right\" id=\"fig-a\">",
+        );
         let d = compose("![Cap](p.png){#fig-a fig-column=body-outset}\n").markdown;
         assert_has(&d, "class=\"figure column-body-outset\"");
     }
@@ -2653,7 +2736,10 @@ mod tests {
             &d,
             "<figure class=\"figure figure-layout quarto-layout-align-right quarto-layout-valign-center\" id=\"fig-g\">",
         );
-        assert_has(&d, "<figure class=\"subfigure\" id=\"fig-ga\" style=\"flex-basis:33.33%\">");
+        assert_has(
+            &d,
+            "<figure class=\"subfigure\" id=\"fig-ga\" style=\"flex-basis:33.33%\">",
+        );
         assert_has(
             &d,
             "<div class=\"quarto-figure-spacer\" style=\"flex-basis:33.33%\"></div><figure class=\"subfigure\" id=\"fig-gb\"",
@@ -2665,4 +2751,3 @@ mod tests {
         assert_has(&d, "<span class=\"caption-label\">(c)</span> C");
     }
 }
-

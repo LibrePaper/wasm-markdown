@@ -269,7 +269,10 @@ mod tests {
 
     #[test]
     fn column_classes() {
-        assert_eq!(column_class_of("page-right").as_deref(), Some("column-page-right"));
+        assert_eq!(
+            column_class_of("page-right").as_deref(),
+            Some("column-page-right")
+        );
         assert_eq!(column_class_of("margin").as_deref(), Some("margin"));
         assert_eq!(column_class_of(" "), None);
         let classes = vec!["column-page".to_string(), "x".into(), "aside".into()];
@@ -281,7 +284,11 @@ mod tests {
         let plans = plan("[[1,-1,1],[1]]", 3);
         assert_eq!(plans.len(), 3);
         assert_eq!(plans[0].width, "33.33%");
-        assert!(plans[1].before.contains("quarto-figure-spacer"), "{:?}", plans[1]);
+        assert!(
+            plans[1].before.contains("quarto-figure-spacer"),
+            "{:?}",
+            plans[1]
+        );
         assert_eq!(plans[2].before, BREAK);
         assert_eq!(plans[2].width, "100%");
         // The last row repeats while cells remain.

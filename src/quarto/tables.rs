@@ -155,7 +155,10 @@ fn table_classes(lines: &[&str], start: usize, end: usize) -> Vec<String> {
     .unwrap_or_default();
     let mut out: Vec<String> = Vec::new();
     for class in given {
-        if !class.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')) {
+        if !class
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        {
             continue;
         }
         let name = if BOOTSTRAP.contains(&class.as_str()) {
@@ -196,8 +199,8 @@ fn widths(lines: &[&str], start: usize, end: usize, ctx: &Context) -> Option<Vec
     let setting = caption_attrs(lines, start, end, |a| {
         get(&a.attrs, "tbl-colwidths").cloned()
     })
-        .or_else(|| div_attr(lines, start))
-        .or_else(|| get(ctx.meta, "tbl-colwidths").cloned());
+    .or_else(|| div_attr(lines, start))
+    .or_else(|| get(ctx.meta, "tbl-colwidths").cloned());
     let mode = setting.as_ref().map_or(Mode::True, mode);
     let cells = separator_cells(lines[start + 1]);
     let table = &lines[start..end];

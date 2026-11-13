@@ -81,13 +81,17 @@ pub(crate) fn rewrite(expanded: &mut Expanded) {
             continue;
         }
         let content: Vec<(usize, &str)> = (div.start + 1..end).map(|i| (i, refs[i])).collect();
-        if content.iter().any(|(_, l)| super::divs::div_fence(l).is_some()) {
+        if content
+            .iter()
+            .any(|(_, l)| super::divs::div_fence(l).is_some())
+        {
             continue;
         }
         let Some(list) = items(&content) else {
             continue;
         };
-        let mut lines: Vec<(String, usize)> = vec![("<dl>".into(), div.start), (String::new(), div.start)];
+        let mut lines: Vec<(String, usize)> =
+            vec![("<dl>".into(), div.start), (String::new(), div.start)];
         for ((term_at, term), defs) in list {
             for (tag, at, text) in std::iter::once(("dt", term_at, term))
                 .chain(defs.into_iter().map(|(at, text)| ("dd", at, text)))
@@ -141,7 +145,10 @@ mod tests {
         assert!(d.starts_with("<dl>\n"), "{d}");
         assert_eq!(d.matches("<dt>").count(), 2, "{d}");
         assert_eq!(d.matches("<dd>").count(), 3, "{d}");
-        assert!(d.contains("Def **a**") && d.trim_end().ends_with("</dl>"), "{d}");
+        assert!(
+            d.contains("Def **a**") && d.trim_end().ends_with("</dl>"),
+            "{d}"
+        );
         assert!(!d.contains("definition-list"), "{d}");
     }
 

@@ -550,19 +550,40 @@ mod tests {
 
     #[test]
     fn cell_options_place_the_caption_and_the_column() {
-        let d = shown(&cell_source("fig-plot", "fig-cap-location: top\n#| fig-cap: A plot"), FIG);
+        let d = shown(
+            &cell_source("fig-plot", "fig-cap-location: top\n#| fig-cap: A plot"),
+            FIG,
+        );
         assert!(
             d.contains("<figure class=\"figure\" id=\"fig-plot\"><figcaption><span class=\"caption-label\">Figure 1.</span> A plot</figcaption><img"),
             "{d}"
         );
-        let d = shown(&cell_source("fig-plot", "cap-location: margin\n#| fig-cap: A plot"), FIG);
+        let d = shown(
+            &cell_source("fig-plot", "cap-location: margin\n#| fig-cap: A plot"),
+            FIG,
+        );
         assert!(d.contains("<figcaption class=\"margin-caption\">"), "{d}");
-        let d = shown(&cell_source("tbl-head", "tbl-cap-location: bottom\n#| fig-column: page"), TBL);
-        assert!(d.contains("<figure class=\"table\" id=\"tbl-head\">"), "{d}");
-        let d = shown(&cell_source("fig-plot", "fig-column: page\n#| fig-cap: A plot"), FIG);
-        assert!(d.contains("<figure class=\"figure column-page\" id=\"fig-plot\">"), "{d}");
+        let d = shown(
+            &cell_source("tbl-head", "tbl-cap-location: bottom\n#| fig-column: page"),
+            TBL,
+        );
+        assert!(
+            d.contains("<figure class=\"table\" id=\"tbl-head\">"),
+            "{d}"
+        );
+        let d = shown(
+            &cell_source("fig-plot", "fig-column: page\n#| fig-cap: A plot"),
+            FIG,
+        );
+        assert!(
+            d.contains("<figure class=\"figure column-page\" id=\"fig-plot\">"),
+            "{d}"
+        );
         let d = shown("```{r}\n#| column: screen\nx()\n```\n", STDOUT);
-        assert!(d.contains("<div class=\"cell-outputs column-screen\">"), "{d}");
+        assert!(
+            d.contains("<div class=\"cell-outputs column-screen\">"),
+            "{d}"
+        );
     }
 
     #[test]

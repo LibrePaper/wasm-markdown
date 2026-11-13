@@ -384,7 +384,9 @@ mod tests {
     fn code_overflow_and_source_classes_wrap_the_code() {
         let d = compose("```{r}\n#| code-overflow: wrap\n#| class-source: big\n#| attr-source: \".numberLines startFrom=3\"\nx()\n```\n").markdown;
         assert!(
-            d.contains("<div class=\"sourceCode code-overflow-wrap big numberLines\" startFrom=\"3\">"),
+            d.contains(
+                "<div class=\"sourceCode code-overflow-wrap big numberLines\" startFrom=\"3\">"
+            ),
             "{d}"
         );
         assert!(d.contains("```r\nx()\n```\n\n</div>"), "{d}");

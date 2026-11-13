@@ -134,7 +134,9 @@ pub(crate) fn colwidths(html: &str) -> String {
             rest = &rest[at..];
             break;
         };
-        let (widths, classes) = after[..close].split_once('|').unwrap_or((&after[..close], ""));
+        let (widths, classes) = after[..close]
+            .split_once('|')
+            .unwrap_or((&after[..close], ""));
         let cols: String = widths
             .split_whitespace()
             .map(|w| format!("<col style=\"width:{w}%\">"))
