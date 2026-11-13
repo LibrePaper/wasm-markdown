@@ -170,6 +170,25 @@ fn format_option<'a>(ctx: &Context<'a>, key: &str) -> Option<&'a Yaml> {
     get(meta, key).and_then(nonnull)
 }
 
+/// ` class=".." id=".." key=".."` for the `class-NAME` and `attr-NAME` options
+/// of a cell (`NAME` is `source` or `output`), with `extra` classes first.
+/// Empty when there is nothing to say.
+fn option_attributes(cell: &Cell, name: &str, extra: &[&str]) -> String {
+    let mut classes: Vec<String> = extra.iter().map(|c| c.to_string()).collect();
+    let mut id = String::new();
+    let mut map: Map = Vec::new();
+    if let Some(v) = get(&cell.options, &format!("class-{name}")) {
+        classes.extend(v.text().split_whitespace().map(str::to_string));
+    }
+    if let Some(v) = get(&cell.options, &format!("attr-{name}")) {
+        let parsed = parse_attributes(&format!("{{{}}}", v.text()));
+        id = parsed.id;
+        classes.extend(parsed.classes);
+        map = parsed.attrs;
+    }
+    super::divs::tag_attributes(&id, &classes, &map, &[])
+}
+
 /// The code of a cell as a plain code block, as Quarto shows source: no
 /// braces on the fence, no `#|` lines; with the file name above it and inside
 /// a `<details>` when it folds. The lines of the code keep their source line.
@@ -212,6 +231,20 @@ fn show_code(cell: &Cell, ctx: &Context, out: &mut Out) {
             span,
         );
     }
+    // `code-overflow: wrap`, `class-source` and `attr-source` ride on a
+    // wrapper div: comrak gives a fenced block no attributes of its own.
+    let wrap = option(&cell.options, &[], "code-overflow")
+        .or_else(|| format_option(ctx, "code-overflow"))
+        .is_some_and(|v| v.text() == "wrap");
+    let extra: &[&str] = if wrap { &["code-overflow-wrap"] } else { &[] };
+    let mut attributes = option_attributes(cell, "source", extra);
+    if !attributes.is_empty() {
+        attributes = attributes.replacen("class=\"", "class=\"sourceCode ", 1);
+        if !attributes.contains("class=\"") {
+            attributes.insert_str(0, " class=\"sourceCode\"");
+        }
+        out.block(&format!("<div{attributes}>"), span);
+    }
     let body = cell.end - cell.start - 1;
     let first = cell.start + 1 + body.saturating_sub(cell.code.len());
     let fence = verbatim_fence(&code);
@@ -220,6 +253,9 @@ fn show_code(cell: &Cell, ctx: &Context, out: &mut Out) {
         out.push(line, Some(first + n), span);
     }
     out.push(&fence, None, span);
+    if !attributes.is_empty() {
+        out.block("</div>", span);
+    }
     if folded {
         out.block("</details>", span);
     }
@@ -287,15 +323,25 @@ pub(crate) fn display(
     let Some((output, html)) = html else {
         return;
     };
+    // `class-output` and `attr-output` land on the container.
+    let extra = option_attributes(cell, "output", &[]);
+    let with_classes = |base: &str| {
+        if extra.contains("class=\"") {
+            extra.replacen("class=\"", &format!("class=\"{base} "), 1)
+        } else {
+            format!(" class=\"{base}\"{extra}")
+        }
+    };
     let block = if output.stale {
         format!(
-            "<div class=\"cell-outputs cell-output-stale\" title=\"{}\">{html}</div>",
+            "<div{} title=\"{}\">{html}</div>",
+            with_classes("cell-outputs cell-output-stale"),
             crate::page::escape(&ctx.strings.output_stale)
         )
     } else {
         // A plain container: the outputs inside carry their own classes
         // (cell-output-stdout, -display, …), so it adds no rule of its own.
-        format!("<div class=\"cell-outputs\">{html}</div>")
+        format!("<div{}>{html}</div>", with_classes("cell-outputs"))
     };
     out.block(&block, span);
 }
@@ -325,6 +371,33 @@ mod tests {
         )
         .markdown;
         assert!(d.contains("back_again()"), "{d}");
+    }
+
+    #[test]
+    fn code_overflow_and_source_classes_wrap_the_code() {
+        let d = compose("```{r}\n#| code-overflow: wrap\n#| class-source: big\n#| attr-source: \".numberLines startFrom=3\"\nx()\n```\n").markdown;
+        assert!(
+            d.contains("<div class=\"sourceCode code-overflow-wrap big numberLines\" startFrom=\"3\">"),
+            "{d}"
+        );
+        assert!(d.contains("```r\nx()\n```\n\n</div>"), "{d}");
+        let d = compose("---\ncode-overflow: wrap\n---\n\n```{r}\nx()\n```\n").markdown;
+        assert!(d.contains("class=\"sourceCode code-overflow-wrap\""), "{d}");
+        let d = compose("```{r}\nx()\n```\n").markdown;
+        assert!(!d.contains("sourceCode"), "{d}");
+    }
+
+    #[test]
+    fn class_output_and_attr_output_go_on_the_output_container() {
+        let d = with_outputs(
+            "```{r}\n#| class-output: tall\n#| attr-output: \"data-x=1\"\nx()\n```\n",
+            r#"{"outputs":[{"line":1,"html":"<p>O</p>"}]}"#,
+        )
+        .markdown;
+        assert!(
+            d.contains("<div class=\"cell-outputs tall\" data-x=\"1\"><p>O</p></div>"),
+            "{d}"
+        );
     }
 
     #[test]

@@ -44,6 +44,7 @@
 
 mod attrs;
 mod cells;
+mod definitions;
 mod divs;
 mod front_matter;
 mod includes;
@@ -547,7 +548,9 @@ pub fn draft(
         .collect();
     // Block-level includes are spliced in first, so everything below sees one
     // document; `expanded.origin` says where each line really is.
-    let expanded = includes::expand(&main_lines, path, files, &extras.strings);
+    let mut expanded = includes::expand(&main_lines, path, files, &extras.strings);
+    shortcodes::move_contents(&mut expanded);
+    definitions::rewrite(&mut expanded);
     let lines: Vec<&str> = expanded.lines.iter().map(String::as_str).collect();
     let origin = &expanded.origin;
     let parsed = parse(&lines);

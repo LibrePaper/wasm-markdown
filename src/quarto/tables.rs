@@ -4,6 +4,10 @@
 //! carries the widths on its own: an HTML comment line
 //! `<!-- lp-colwidths 30.00 70.00 -->` just before the table's header row.
 //! `markdown.rs` turns the comment into a `<colgroup>` after comrak ran.
+//! The same comment carries the table's classes after a bar,
+//! `<!-- lp-colwidths 30.00 70.00 | table-striped table-hover -->` (the
+//! widths may be empty): the classes of the caption attributes, named the way
+//! Quarto names them (`.striped` is `table-striped`).
 //!
 //! Pandoc's rule: a table with a line longer than 72 characters gets widths
 //! proportional to the characters in each cell of the separator line. Quarto's
@@ -12,7 +16,7 @@
 //! option is read from the table's caption line, then from the nearest
 //! enclosing div, then from the front matter.
 
-use super::attrs::parse_attributes;
+use super::attrs::{parse_attributes, Attrs};
 use super::divs::div_fence;
 use super::front_matter::{get, Yaml};
 use super::{Context, Out};
@@ -90,8 +94,14 @@ fn separator_cells(line: &str) -> Vec<usize> {
     t.split('|').map(|c| c.trim().chars().count()).collect()
 }
 
-/// The attributes of a `: Caption {...}` line next to the table.
-fn caption_attrs(lines: &[&str], start: usize, end: usize) -> Option<Yaml> {
+/// What `pick` reads from the attributes of a `: Caption {...}` line next to
+/// the table (the first line it finds something in).
+fn caption_attrs<T>(
+    lines: &[&str],
+    start: usize,
+    end: usize,
+    pick: impl Fn(&Attrs) -> Option<T>,
+) -> Option<T> {
     let near = |i: Option<usize>| i.and_then(|i| lines.get(i)).map(|l| l.trim());
     let above = start.checked_sub(1);
     let below = Some(end);
@@ -111,8 +121,55 @@ fn caption_attrs(lines: &[&str], start: usize, end: usize) -> Option<Yaml> {
         }
         let rest = line.strip_prefix(':')?.trim();
         let at = rest.rfind('{').filter(|_| rest.ends_with('}'))?;
-        get(&parse_attributes(&rest[at..]).attrs, "tbl-colwidths").cloned()
+        pick(&parse_attributes(&rest[at..]))
     })
+}
+
+/// The classes of the caption attributes, as Quarto puts them on a table.
+fn table_classes(lines: &[&str], start: usize, end: usize) -> Vec<String> {
+    const BOOTSTRAP: [&str; 20] = [
+        "primary",
+        "secondary",
+        "success",
+        "danger",
+        "warning",
+        "info",
+        "light",
+        "dark",
+        "striped",
+        "hover",
+        "active",
+        "bordered",
+        "borderless",
+        "sm",
+        "responsive",
+        "responsive-sm",
+        "responsive-md",
+        "responsive-lg",
+        "responsive-xl",
+        "responsive-xxl",
+    ];
+    let given = caption_attrs(lines, start, end, |a| {
+        (!a.classes.is_empty()).then(|| a.classes.clone())
+    })
+    .unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
+    for class in given {
+        if !class.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')) {
+            continue;
+        }
+        let name = if BOOTSTRAP.contains(&class.as_str()) {
+            format!("table-{class}")
+        } else {
+            class
+        };
+        // A small table is `table-sm` and `small` both.
+        if name == "table-sm" {
+            out.push("small".into());
+        }
+        out.push(name);
+    }
+    out
 }
 
 /// `tbl-colwidths` of the nearest enclosing div that sets it.
@@ -136,7 +193,9 @@ fn div_attr(lines: &[&str], start: usize) -> Option<Yaml> {
 /// The percentages for the table of lines `start..end`, or none for a table
 /// the browser should size itself.
 fn widths(lines: &[&str], start: usize, end: usize, ctx: &Context) -> Option<Vec<f64>> {
-    let setting = caption_attrs(lines, start, end)
+    let setting = caption_attrs(lines, start, end, |a| {
+        get(&a.attrs, "tbl-colwidths").cloned()
+    })
         .or_else(|| div_attr(lines, start))
         .or_else(|| get(ctx.meta, "tbl-colwidths").cloned());
     let mode = setting.as_ref().map_or(Mode::True, mode);
@@ -175,15 +234,22 @@ pub(crate) fn mark(lines: &[&str], start: usize, ctx: &Context, out: &mut Out) {
     let Some(end) = table_at(lines, start) else {
         return;
     };
-    let Some(widths) = widths(lines, start, end, ctx) else {
+    let widths = widths(lines, start, end, ctx).unwrap_or_default();
+    let classes = table_classes(lines, start, end);
+    if widths.is_empty() && classes.is_empty() {
         return;
-    };
+    }
     let list: Vec<String> = widths.iter().map(|w| format!("{w:.2}")).collect();
-    out.push(
-        &format!("<!-- lp-colwidths {} -->", list.join(" ")),
-        None,
-        (start, end - 1),
-    );
+    let marker = if classes.is_empty() {
+        format!("<!-- lp-colwidths {} -->", list.join(" "))
+    } else {
+        format!(
+            "<!-- lp-colwidths {} | {} -->",
+            list.join(" "),
+            classes.join(" ")
+        )
+    };
+    out.push(&marker, None, (start, end - 1));
 }
 
 #[cfg(test)]
@@ -199,6 +265,15 @@ mod tests {
             .lines()
             .find(|l| l.starts_with("<!-- lp-colwidths"))
             .map(String::from)
+    }
+
+    #[test]
+    fn caption_classes_ride_on_the_marker_the_way_quarto_names_them() {
+        let source = "| a | b |\n|---|---|\n| 1 | 2 |\n\n: Cap {#tbl-x .striped .sm .mine}\n";
+        assert_eq!(
+            marker(source).as_deref(),
+            Some("<!-- lp-colwidths  | table-striped small table-sm mine -->")
+        );
     }
 
     #[test]

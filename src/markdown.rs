@@ -120,7 +120,9 @@ fn render_quarto_with(source: &str, title: &str, assets: Resolve) -> String {
 }
 
 /// Turns the draft's `<!-- lp-colwidths A B -->` markers into a `<colgroup>`
-/// in the table that follows each. A marker with no table after it is dropped.
+/// in the table that follows each. After a bar the marker may name classes for
+/// the table: `<!-- lp-colwidths 30.00 70.00 | table-striped -->`. A marker
+/// with no table after it is dropped.
 pub(crate) fn colwidths(html: &str) -> String {
     const OPEN: &str = "<!-- lp-colwidths ";
     let mut out = String::with_capacity(html.len());
@@ -132,14 +134,26 @@ pub(crate) fn colwidths(html: &str) -> String {
             rest = &rest[at..];
             break;
         };
-        let cols: String = after[..close]
+        let (widths, classes) = after[..close].split_once('|').unwrap_or((&after[..close], ""));
+        let cols: String = widths
             .split_whitespace()
             .map(|w| format!("<col style=\"width:{w}%\">"))
             .collect();
+        let classes: Vec<&str> = classes.split_whitespace().collect();
+        let class = if classes.is_empty() {
+            String::new()
+        } else {
+            format!(" class=\"{}\"", classes.join(" "))
+        };
+        let group = if cols.is_empty() {
+            String::new()
+        } else {
+            format!("<colgroup>{cols}</colgroup>")
+        };
         rest = &after[close + 3..];
         let tail = rest.trim_start();
         if let Some(table) = tail.strip_prefix("<table>") {
-            out.push_str(&format!("<table><colgroup>{cols}</colgroup>"));
+            out.push_str(&format!("<table{class}>{group}"));
             rest = table;
         }
     }
@@ -385,6 +399,18 @@ mod tests {
         let figure = html.find("<figure").expect(&html);
         let cols = html.find("<colgroup>").expect(&html);
         assert!(figure < cols && html.contains("</figure>"), "{html}");
+    }
+
+    #[test]
+    fn a_marker_can_carry_table_classes() {
+        assert_eq!(
+            colwidths("<!-- lp-colwidths | table-striped small -->\n<table>\n<tr></tr>"),
+            "<table class=\"table-striped small\">\n<tr></tr>"
+        );
+        assert_eq!(
+            colwidths("<!-- lp-colwidths 50.00 50.00 | table-hover -->\n<table>"),
+            "<table class=\"table-hover\"><colgroup><col style=\"width:50.00%\"><col style=\"width:50.00%\"></colgroup>"
+        );
     }
 
     #[test]

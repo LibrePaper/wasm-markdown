@@ -164,7 +164,7 @@ fn extra_attributes(map: &Map, skip: &[&str]) -> String {
 }
 
 /// ` class=".." id=".." ...` for a tag.
-fn tag_attributes(id: &str, classes: &[String], map: &Map, skip: &[&str]) -> String {
+pub(crate) fn tag_attributes(id: &str, classes: &[String], map: &Map, skip: &[&str]) -> String {
     format!(
         "{}{}",
         html_attributes(id, classes),
@@ -272,16 +272,24 @@ fn capitalised(word: &str) -> String {
         .unwrap_or_default()
 }
 
-fn callout_open(div: &Div, kind: &str, lines: &[&str]) -> String {
+fn callout_open(div: &Div, kind: &str, lines: &[&str], ctx: &Context) -> String {
     let title = attr_text(&div.attrs, "title")
         .or_else(|| leading_heading(div, lines).map(|h| h.1))
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| capitalised(kind));
     let mut classes = vec!["callout".to_string(), format!("callout-{kind}")];
-    match attr_text(&div.attrs, "appearance").as_deref() {
+    // The front matter's `callout-appearance` and `callout-icon` are the
+    // defaults for a callout that has no `appearance` or `icon` of its own.
+    let appearance = attr_text(&div.attrs, "appearance")
+        .or_else(|| get(ctx.meta, "callout-appearance").map(|v| v.text()));
+    match appearance.as_deref() {
         Some("simple") => classes.push("callout-simple".into()),
         Some("minimal") => classes.push("callout-minimal".into()),
         _ => {}
+    }
+    let icon = attr_text(&div.attrs, "icon").or_else(|| get(ctx.meta, "callout-icon").map(|v| v.text()));
+    if icon.as_deref() == Some("false") {
+        classes.push("no-icon".into());
     }
     classes.extend(
         div.classes
@@ -307,9 +315,9 @@ fn callout_open(div: &Div, kind: &str, lines: &[&str]) -> String {
 /// The raw HTML line that opens a div, or none to emit nothing. `lines` are
 /// the source lines of the document, for the features that read the div's
 /// content (a callout's heading, the tabs of a tabset).
-pub(crate) fn open(div: &Div, lines: &[&str], _ctx: &mut Context) -> Option<String> {
+pub(crate) fn open(div: &Div, lines: &[&str], ctx: &mut Context) -> Option<String> {
     if let Some(kind) = callout_kind(div) {
-        return Some(callout_open(div, kind, lines));
+        return Some(callout_open(div, kind, lines, ctx));
     }
     if is_margin(div) {
         let classes: Vec<String> = std::iter::once("margin".to_string())
@@ -523,6 +531,26 @@ pub(crate) fn spans(text: &str, ctx: &mut Context) -> String {
 #[cfg(test)]
 mod tests {
     use crate::quarto::tests::compose;
+
+    #[test]
+    fn callout_defaults_come_from_the_front_matter() {
+        let front = "---\ncallout-appearance: simple\ncallout-icon: false\n---\n\n";
+        let d = compose(&format!("{front}::: {{.callout-note}}\nA\n:::\n")).markdown;
+        assert!(d.contains("callout callout-note callout-simple no-icon"), "{d}");
+        let d = compose(&format!(
+            "{front}::: {{.callout-note appearance=minimal icon=true}}\nA\n:::\n"
+        ))
+        .markdown;
+        assert!(d.contains("callout callout-note callout-minimal\""), "{d}");
+        assert!(!d.contains("no-icon"), "{d}");
+    }
+
+    #[test]
+    fn hidden_divs_and_spans_keep_their_class() {
+        let d = compose("::: {.hidden}\nX\n:::\n\nA [b]{.hidden} c\n").markdown;
+        assert!(d.contains("<div class=\"hidden\">"), "{d}");
+        assert!(d.contains("<span class=\"hidden\">b</span>"), "{d}");
+    }
 
     #[test]
     fn a_div_is_rendered_around_its_markdown() {

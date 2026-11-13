@@ -13,6 +13,7 @@ use super::shortcodes::{block_include, cycle_span, resolve, unavailable_span, MA
 use super::{fence_closes, fence_open, warning, Strings};
 
 /// Where a line of the expanded text comes from.
+#[derive(Clone)]
 pub(crate) struct Origin {
     /// Whether it is in the main file.
     pub main: bool,
