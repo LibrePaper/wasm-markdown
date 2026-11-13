@@ -102,6 +102,10 @@ Kinds: note tip warning important caution. Quiet tint + thin left accent.
 - `.smallcaps`, `.underline`, `mark` (also `.mark`), `kbd`.
 - Columns: `<div class="columns"><div class="column" style="flex-basis:40%">…</div>…</div>`.
 - Margin: `<aside class="margin">…</aside>` (floats right into the gutter on wide pages, inline box on narrow).
+- Wide columns: `.column-body-outset`, `.column-page`, `.column-screen-inset-shaded`... stay as classes on the div, and `fig-column`, `tbl-column` and a cell's `column` put `column-<value>` on the figure, the table or `div.cell-outputs`. `column-margin` on a figure or table becomes `margin`.
+- Caption location (`fig-cap-location`, `tbl-cap-location`, `cap-location`): the figcaption is the first or the last child of the figure; `margin` gives it `class="margin-caption"`.
+- Layout: `layout-ncol` is `figure.figure-grid`; `layout="[[1,-1,1],[1]]"` is `figure.figure-layout` (a wrapping flex row) whose subfigures carry `style="flex-basis:W%"`, with `div.quarto-figure-spacer` for a negative number and `div.quarto-layout-break` (full width, no height) between rows. `layout-align` and `layout-valign` add `quarto-layout-align-left|center|right` and `quarto-layout-valign-top|center|bottom` to the figure.
+- `.content-visible` and `.content-hidden` (`when-format`, `unless-format`, `when-meta`, `unless-meta`) leave no markup: shown content is plain, hidden content is gone before numbering.
 - Tabset: `<div class="tabset"><div class="tab"><p class="tab-title">R</p>…</div>…</div>` (stacked; a host may enhance into tabs).
 - `<div class="pagebreak"></div>` (hidden on screen, page-break in print).
 - `<div class="video"><iframe …></iframe></div>` (16:9 responsive).

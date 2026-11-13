@@ -287,15 +287,22 @@ pub(crate) fn display(
     let Some((output, html)) = html else {
         return;
     };
+    // `column`, `layout-align` and `layout-valign` are classes of the outputs.
+    let mut extra: Vec<String> = opt("column")
+        .and_then(|v| super::layout::column_class_of(&v.text()))
+        .into_iter()
+        .collect();
+    extra.extend(super::layout::align_classes(&cell.options));
+    let extra: String = extra.iter().map(|c| format!(" {c}")).collect();
     let block = if output.stale {
         format!(
-            "<div class=\"cell-outputs cell-output-stale\" title=\"{}\">{html}</div>",
+            "<div class=\"cell-outputs cell-output-stale{extra}\" title=\"{}\">{html}</div>",
             crate::page::escape(&ctx.strings.output_stale)
         )
     } else {
         // A plain container: the outputs inside carry their own classes
         // (cell-output-stdout, -display, …), so it adds no rule of its own.
-        format!("<div class=\"cell-outputs\">{html}</div>")
+        format!("<div class=\"cell-outputs{extra}\">{html}</div>")
     };
     out.block(&block, span);
 }

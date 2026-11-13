@@ -44,9 +44,11 @@
 
 mod attrs;
 mod cells;
+mod conditional;
 mod divs;
 mod front_matter;
 mod includes;
+mod layout;
 mod outputs;
 mod refs;
 mod shortcodes;
@@ -548,7 +550,14 @@ pub fn draft(
     // Block-level includes are spliced in first, so everything below sees one
     // document; `expanded.origin` says where each line really is.
     let expanded = includes::expand(&main_lines, path, files, &extras.strings);
-    let lines: Vec<&str> = expanded.lines.iter().map(String::as_str).collect();
+    // Conditional content is resolved before anything is numbered.
+    let visible = conditional::resolve(&expanded.lines, for_pandoc);
+    let lines: Vec<&str> = visible
+        .as_deref()
+        .unwrap_or(expanded.lines.as_slice())
+        .iter()
+        .map(String::as_str)
+        .collect();
     let origin = &expanded.origin;
     let parsed = parse(&lines);
     let defaults: Map = match get(&parsed.fm.meta, "execute") {

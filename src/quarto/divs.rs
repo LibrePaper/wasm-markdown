@@ -434,7 +434,18 @@ pub(crate) fn content_line(
 }
 
 /// The HTML of a bracketed span `[content]{...}`.
-pub(crate) fn render_span(content: &str, attrs: &Attrs, _ctx: &mut Context) -> String {
+pub(crate) fn render_span(content: &str, attrs: &Attrs, ctx: &mut Context) -> String {
+    // `.content-visible` and `.content-hidden` spans keep only their content,
+    // or nothing.
+    if let Some(shown) =
+        super::conditional::visibility(&attrs.classes, &attrs.attrs, ctx.meta, ctx.for_pandoc)
+    {
+        return if shown {
+            content.to_string()
+        } else {
+            String::new()
+        };
+    }
     let has = |name: &str| attrs.classes.iter().any(|c| c == name);
     let (tag, classes): (&str, Vec<String>) = if has("mark") {
         (

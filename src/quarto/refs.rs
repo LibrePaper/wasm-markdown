@@ -18,6 +18,7 @@ use super::attrs::parse_attributes;
 use super::cells::option;
 use super::divs::{self, Div};
 use super::front_matter::{get, Map, Yaml};
+use super::layout::{self, CapLocation, CellPlan};
 use super::{backtick_run, code_span_end, fence_closes, fence_open, prose, Context, Out, Parsed};
 
 // ------------------------------------------------------------- references
@@ -137,6 +138,8 @@ struct Image {
     width: String,
     height: String,
     align: String,
+    /// Every attribute of the image, for `cap-location` and `fig-column`.
+    attrs: Map,
 }
 
 enum Item {
@@ -178,6 +181,11 @@ pub(crate) struct Refs {
     inline: HashMap<usize, usize>,
     /// Subfigure id -> `a`, `b`...
     letters: HashMap<String, char>,
+    /// By the first line of a cell of a `layout="[[1,1],[1]]"` figure: its
+    /// row breaks, spacers and width.
+    plans: HashMap<usize, CellPlan>,
+    /// The front matter, for the document-level layout options.
+    meta: Map,
     toc: String,
 }
 
@@ -213,6 +221,16 @@ impl Refs {
         }
     }
 
+    /// Where the caption of a float of `kind` goes.
+    pub(crate) fn cap_location(&self, element: &Map, kind: &str) -> CapLocation {
+        layout::cap_location(element, &self.meta, kind)
+    }
+
+    /// The wide-column class of a float of `kind`, from its `{kind}-column`.
+    pub(crate) fn column_class(&self, element: &Map, kind: &str) -> Option<String> {
+        layout::column_class(element, &self.meta, kind)
+    }
+
     /// `Theorem 1 (Name).` as spans, or `Proof.`.
     fn div_label(&self, info: &DivInfo) -> String {
         if info.kind == "proof" {
@@ -237,9 +255,16 @@ impl Refs {
         out
     }
 
-    fn figcaption(&self, id: &str, caption: &str) -> String {
+    /// Where a caption goes is the caller's business; a margin caption says
+    /// so with a class.
+    fn figcaption_in(&self, id: &str, caption: &str, location: CapLocation) -> String {
+        let class = if location == CapLocation::Margin {
+            " class=\"margin-caption\""
+        } else {
+            ""
+        };
         let mut out = format!(
-            "<figcaption><span class=\"caption-label\">{}</span>",
+            "<figcaption{class}><span class=\"caption-label\">{}</span>",
             escape(&self.caption_label(id))
         );
         if !caption.is_empty() {
@@ -250,7 +275,7 @@ impl Refs {
         out
     }
 
-    fn image_html(&self, img: &Image) -> String {
+    fn image_html(&self, img: &Image, plan: Option<&CellPlan>) -> String {
         let class = if self.letters.contains_key(&img.id) {
             "subfigure"
         } else {
@@ -279,12 +304,28 @@ impl Refs {
         } else {
             format!(" style=\"{}\"", escape(&style.join(";")))
         };
+        let location = self.cap_location(&img.attrs, "fig");
+        let caption = self.figcaption_in(&img.id, &img.alt, location);
+        let (above, below) = if location == CapLocation::Top {
+            (caption, String::new())
+        } else {
+            (String::new(), caption)
+        };
+        let mut classes = vec![class.to_string()];
+        classes.extend(self.column_class(&img.attrs, "fig"));
+        let (lead, cell_style) = match plan {
+            Some(p) => (
+                p.before.as_str(),
+                format!(" style=\"flex-basis:{}\"", p.width),
+            ),
+            None => ("", String::new()),
+        };
         format!(
-            "<figure class=\"{class}\" id=\"{id}\"><img src=\"{src}\" alt=\"{alt}\"{style}>{caption}</figure>",
+            "{lead}<figure class=\"{classes}\" id=\"{id}\"{cell_style}>{above}<img src=\"{src}\" alt=\"{alt}\"{style}>{below}</figure>",
+            classes = classes.join(" "),
             id = escape(&img.id),
             src = escape(&img.src),
             alt = escape(&alt),
-            caption = self.figcaption(&img.id, &img.alt),
         )
     }
 
@@ -298,12 +339,36 @@ impl Refs {
         )
     }
 
-    fn table_open(&self, id: &str, caption: &str) -> String {
+    /// The opening of a table float; the caption is here when it goes above.
+    fn table_open_in(
+        &self,
+        id: &str,
+        caption: &str,
+        location: CapLocation,
+        classes: &[String],
+    ) -> String {
+        let mut class = vec!["table".to_string()];
+        class.extend(classes.iter().cloned());
+        let above = if location == CapLocation::Top {
+            self.figcaption_in(id, caption, location)
+        } else {
+            String::new()
+        };
         format!(
-            "<figure class=\"table\" id=\"{}\">\n{}",
-            escape(id),
-            self.figcaption(id, caption)
+            "<figure class=\"{}\" id=\"{}\">\n{above}",
+            class.join(" "),
+            escape(id)
         )
+    }
+
+    /// The end of a table float; the caption is here when it goes below or
+    /// in the margin.
+    fn table_close(&self, id: &str, caption: &str, location: CapLocation) -> String {
+        if location == CapLocation::Top {
+            "</figure>".to_string()
+        } else {
+            format!("{}</figure>", self.figcaption_in(id, caption, location))
+        }
     }
 }
 
@@ -646,6 +711,7 @@ fn parse_image(line: &str) -> Option<Image> {
         width: css_length(text("width")),
         height: css_length(text("height")),
         align: text("fig-align"),
+        attrs: attrs.attrs.clone(),
     })
 }
 
@@ -816,6 +882,7 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
     let live = live_lines(lines, parsed.fm.lines);
     let mut refs = Refs {
         words: Words::new(meta),
+        meta: meta.clone(),
         ..Refs::default()
     };
     // (line, id) of everything that takes a number.
@@ -1098,6 +1165,23 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
         refs.targets.insert(id.clone(), Target { kind, number });
     }
     subs.sort_by_key(|(line, _, _)| *line);
+    // A figure with `layout="[[1,1],[1]]"` places its cells (the subfigures
+    // directly in it) in those rows.
+    for (n, d) in parsed.divs.iter().enumerate() {
+        let Some(spec) = get(&d.attrs, "layout").filter(|_| prefix_kind(&d.id) == Some("fig"))
+        else {
+            continue;
+        };
+        let cells: Vec<usize> = subs
+            .iter()
+            .filter(|(_, _, parent)| *parent == n)
+            .map(|(line, _, _)| *line)
+            .collect();
+        let plans = layout::plan(&layout::flat_text(spec), cells.len());
+        for (line, plan) in cells.into_iter().zip(plans) {
+            refs.plans.insert(line, plan);
+        }
+    }
     let mut seen: HashMap<usize, u8> = HashMap::new();
     for (_, id, parent) in subs {
         let slot = seen.entry(parent).or_insert(0);
@@ -1230,19 +1314,51 @@ pub(crate) fn div_open(div: &Div, ctx: &mut Context) -> Option<String> {
     let info = refs.divs.get(&div.start)?;
     match info.kind {
         "fig" => {
-            let mut class = if refs.letters.contains_key(&div.id) {
+            let mut classes = vec![if refs.letters.contains_key(&div.id) {
                 "subfigure".to_string()
             } else {
                 "figure".to_string()
-            };
-            let mut style = String::new();
+            }];
+            let mut styles: Vec<String> = Vec::new();
             if let Some(cols) = layout_columns(div) {
-                class.push_str(" figure-grid");
-                style = format!(" style=\"--lp-cols:{cols}\"");
+                classes.push("figure-grid".to_string());
+                styles.push(format!("--lp-cols:{cols}"));
+            } else if get(&div.attrs, "layout").is_some() {
+                classes.push("figure-layout".to_string());
             }
-            Some(format!("<figure class=\"{class}\"{id}{style}>"))
+            classes.extend(layout::align_classes(&div.attrs));
+            classes.extend(layout::div_columns(&div.classes));
+            classes.extend(refs.column_class(&div.attrs, "fig"));
+            let mut seen = HashSet::new();
+            classes.retain(|c| seen.insert(c.clone()));
+            let plan = refs.plans.get(&div.start);
+            if let Some(p) = plan {
+                styles.push(format!("flex-basis:{}", p.width));
+            }
+            let style = if styles.is_empty() {
+                String::new()
+            } else {
+                format!(" style=\"{}\"", styles.join(";"))
+            };
+            let above = if refs.cap_location(&div.attrs, "fig") == CapLocation::Top {
+                refs.figcaption_in(&div.id, &info.caption, CapLocation::Top)
+            } else {
+                String::new()
+            };
+            let lead = plan.map_or("", |p| p.before.as_str());
+            Some(format!(
+                "{lead}<figure class=\"{}\"{id}{style}>{above}",
+                classes.join(" ")
+            ))
         }
-        "tbl" => Some(refs.table_open(&div.id, &info.caption)),
+        "tbl" => {
+            let location = refs.cap_location(&div.attrs, "tbl");
+            let mut classes = layout::div_columns(&div.classes);
+            classes.extend(refs.column_class(&div.attrs, "tbl"));
+            let mut seen = HashSet::new();
+            classes.retain(|c| seen.insert(c.clone()));
+            Some(refs.table_open_in(&div.id, &info.caption, location, &classes))
+        }
         "proof" => {
             let mut html = format!("<div class=\"proof\"{id}>");
             if info.inline_line.is_none() {
@@ -1268,11 +1384,18 @@ pub(crate) fn div_close(div: &Div, ctx: &mut Context) -> Option<String> {
     }
     let info = refs.divs.get(&div.start)?;
     match info.kind {
-        "fig" => Some(format!(
-            "{}</figure>",
-            refs.figcaption(&div.id, &info.caption)
+        "fig" => Some(match refs.cap_location(&div.attrs, "fig") {
+            CapLocation::Top => "</figure>".to_string(),
+            location => format!(
+                "{}</figure>",
+                refs.figcaption_in(&div.id, &info.caption, location)
+            ),
+        }),
+        "tbl" => Some(refs.table_close(
+            &div.id,
+            &info.caption,
+            refs.cap_location(&div.attrs, "tbl"),
         )),
-        "tbl" => Some("</figure>".to_string()),
         _ => Some("</div>".to_string()),
     }
 }
@@ -1337,16 +1460,19 @@ pub(crate) fn line(i: usize, lines: &[&str], ctx: &mut Context, out: &mut Out) -
     if let Some(span) = refs.items.get(&i) {
         let origin = (i, span.end);
         match &span.item {
-            Item::Image(img) => out.block(&refs.image_html(img), origin),
+            Item::Image(img) => out.block(&refs.image_html(img, refs.plans.get(&i)), origin),
             Item::Equation { id, tex } => out.block(&refs.equation_html(id, tex), origin),
             Item::Table { id, caption, rows } => {
-                out.block(&refs.table_open(id, caption), origin);
+                let none = Map::new();
+                let location = refs.cap_location(&none, "tbl");
+                let classes: Vec<String> = refs.column_class(&none, "tbl").into_iter().collect();
+                out.block(&refs.table_open_in(id, caption, location, &classes), origin);
                 super::tables::mark(lines, rows.start, ctx, out);
                 for l in rows.clone() {
                     let text = prose(lines[l], ctx);
                     out.push(&text, Some(l), (l, l));
                 }
-                out.block("</figure>", origin);
+                out.block(&refs.table_close(id, caption, location), origin);
             }
         }
         return Some(span.end + 1 - i);
@@ -1802,4 +1928,60 @@ mod tests {
                       ```{r}\n#| label: fig-back\n#| include: true\n#| fig-cap: Back\n1\n```\n\nSee @fig-back.\n";
         assert_has(&compose(source).markdown, "href=\"#fig-back\">Figure 1</a>");
     }
+
+    #[test]
+    fn caption_location_moves_the_caption_of_figures_and_tables() {
+        // A figure image: top by attribute, margin by document option.
+        let d = compose("![Cap](p.png){#fig-a cap-location=top}\n").markdown;
+        assert_has(&d, "id=\"fig-a\"><figcaption><span class=\"caption-label\">Figure 1.</span> Cap</figcaption><img");
+        let d = compose("---\nfig-cap-location: margin\n---\n\n![Cap](p.png){#fig-a}\n").markdown;
+        assert_has(&d, "><img src=\"p.png\" alt=\"Cap\"><figcaption class=\"margin-caption\">");
+        // A figure div: caption on top is written at the opening fence.
+        let d = compose("::: {#fig-d cap-location=top}\n![](d.png)\n\nDiv caption\n:::\n").markdown;
+        assert!(
+            d.find("<figcaption").unwrap() < d.find("d.png").unwrap(),
+            "{d}"
+        );
+        // A table keeps its caption on top, and moves it below on request.
+        let table = "| a |\n|---|\n| 1 |\n\n: Results {#tbl-r}\n";
+        let d = compose(table).markdown;
+        assert!(d.find("<figcaption").unwrap() < d.find("| a |").unwrap(), "{d}");
+        let d = compose(&format!("---\ntbl-cap-location: bottom\n---\n\n{table}")).markdown;
+        assert!(d.find("<figcaption").unwrap() > d.find("| a |").unwrap(), "{d}");
+        let d = compose("::: {#tbl-x cap-location=margin}\n| a |\n|---|\n| 1 |\n\nCap\n:::\n").markdown;
+        assert_has(&d, "<figcaption class=\"margin-caption\">");
+    }
+
+    #[test]
+    fn wide_column_classes_stay_on_figures_divs_and_come_from_options() {
+        let d = compose("::: {.column-page}\nWide\n:::\n").markdown;
+        assert_has(&d, "<div class=\"column-page\">");
+        let d = compose("::: {#fig-w .column-screen-inset-shaded}\n![](w.png)\n\nCap\n:::\n").markdown;
+        assert_has(&d, "<figure class=\"figure column-screen-inset-shaded\" id=\"fig-w\">");
+        let d = compose("---\nfig-column: page-right\n---\n\n![Cap](p.png){#fig-a}\n").markdown;
+        assert_has(&d, "<figure class=\"figure column-page-right\" id=\"fig-a\">");
+        let d = compose("![Cap](p.png){#fig-a fig-column=body-outset}\n").markdown;
+        assert_has(&d, "class=\"figure column-body-outset\"");
+    }
+
+    #[test]
+    fn layout_rows_place_cells_with_spacers_and_alignment() {
+        let source = "::: {#fig-g layout=\"[[1,-1,1],[1]]\" layout-valign=center layout-align=right}\n![A](a.png){#fig-ga}\n![B](b.png){#fig-gb}\n![C](c.png){#fig-gc}\n\nCap\n:::\n";
+        let d = compose(source).markdown;
+        assert_has(
+            &d,
+            "<figure class=\"figure figure-layout quarto-layout-align-right quarto-layout-valign-center\" id=\"fig-g\">",
+        );
+        assert_has(&d, "<figure class=\"subfigure\" id=\"fig-ga\" style=\"flex-basis:33.33%\">");
+        assert_has(
+            &d,
+            "<div class=\"quarto-figure-spacer\" style=\"flex-basis:33.33%\"></div><figure class=\"subfigure\" id=\"fig-gb\"",
+        );
+        assert_has(
+            &d,
+            "<div class=\"quarto-layout-break\"></div><figure class=\"subfigure\" id=\"fig-gc\" style=\"flex-basis:100%\">",
+        );
+        assert_has(&d, "<span class=\"caption-label\">(c)</span> C");
+    }
 }
+

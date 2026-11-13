@@ -10,6 +10,8 @@
 //! HTML that does not scan comes back as it was.
 
 use super::cells::Cell;
+use super::front_matter::Map;
+use super::layout::CapLocation;
 use super::Context;
 use crate::page::escape;
 
@@ -228,6 +230,8 @@ fn open_tag(html: &str, at: usize) -> Option<(Elem, usize, bool)> {
 
 struct State<'a, 'b> {
     ctx: &'a Context<'b>,
+    /// The cell's options, for where a caption goes and the column class.
+    options: &'a Map,
     /// The cell's label when our numbering knows it and no float took it yet.
     label: Option<String>,
     /// The id of a dropped float wrapper, for a float that has none.
@@ -399,6 +403,7 @@ fn write_float(e: &Elem, kind: &str, st: &mut State, out: &mut String) {
             write_nodes(std::slice::from_ref(child), st, &mut body);
         }
     }
+    let location = st.ctx.refs.cap_location(st.options, kind);
     let mut caption = String::new();
     if let Some(Node::Elem(c)) = caption_at.map(|n| &e.children[n]) {
         let mut inner = String::new();
@@ -433,14 +438,23 @@ fn write_float(e: &Elem, kind: &str, st: &mut State, out: &mut String) {
             }
             None => write_nodes(&c.children, st, &mut inner),
         }
-        caption = format!("<figcaption>{}</figcaption>", inner.trim());
+        let class = if location == CapLocation::Margin {
+            " class=\"margin-caption\""
+        } else {
+            ""
+        };
+        caption = format!("<figcaption{class}>{}</figcaption>", inner.trim());
     }
-    let class = if kind == "tbl" { "table" } else { "figure" };
+    let mut class = String::from(if kind == "tbl" { "table" } else { "figure" });
+    if let Some(column) = st.ctx.refs.column_class(st.options, kind) {
+        class.push(' ');
+        class.push_str(&column);
+    }
     let id_attr = id
         .map(|id| format!(" id=\"{}\"", escape(&id)))
         .unwrap_or_default();
     out.push_str(&format!("<figure class=\"{class}\"{id_attr}>"));
-    if kind == "tbl" {
+    if location == CapLocation::Top {
         out.push_str(&caption);
         out.push_str(body.trim());
     } else {
@@ -460,6 +474,7 @@ pub(crate) fn normalize(html: &str, cell: &Cell, ctx: &Context) -> String {
         (!cell.label.is_empty() && ctx.refs.has_target(&cell.label)).then(|| cell.label.clone());
     let mut st = State {
         ctx,
+        options: &cell.options,
         label,
         pending_id: None,
     };
@@ -531,6 +546,23 @@ mod tests {
         );
         assert!(d.contains("</div></figure>"), "{d}");
         assert_eq!(d.matches("id=\"tbl-head\"").count(), 1, "{d}");
+    }
+
+    #[test]
+    fn cell_options_place_the_caption_and_the_column() {
+        let d = shown(&cell_source("fig-plot", "fig-cap-location: top\n#| fig-cap: A plot"), FIG);
+        assert!(
+            d.contains("<figure class=\"figure\" id=\"fig-plot\"><figcaption><span class=\"caption-label\">Figure 1.</span> A plot</figcaption><img"),
+            "{d}"
+        );
+        let d = shown(&cell_source("fig-plot", "cap-location: margin\n#| fig-cap: A plot"), FIG);
+        assert!(d.contains("<figcaption class=\"margin-caption\">"), "{d}");
+        let d = shown(&cell_source("tbl-head", "tbl-cap-location: bottom\n#| fig-column: page"), TBL);
+        assert!(d.contains("<figure class=\"table\" id=\"tbl-head\">"), "{d}");
+        let d = shown(&cell_source("fig-plot", "fig-column: page\n#| fig-cap: A plot"), FIG);
+        assert!(d.contains("<figure class=\"figure column-page\" id=\"fig-plot\">"), "{d}");
+        let d = shown("```{r}\n#| column: screen\nx()\n```\n", STDOUT);
+        assert!(d.contains("<div class=\"cell-outputs column-screen\">"), "{d}");
     }
 
     #[test]
