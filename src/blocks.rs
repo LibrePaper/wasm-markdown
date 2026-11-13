@@ -207,7 +207,9 @@ mod tests {
         let blocks = run(source, "main.qmd", &no_files);
         assert_eq!(blocks.len(), 1);
         assert!(
-            blocks[0].html.starts_with("<table><colgroup><col style=\"width:25.00%\">"),
+            blocks[0]
+                .html
+                .starts_with("<table><colgroup><col style=\"width:25.00%\">"),
             "{}",
             blocks[0].html
         );

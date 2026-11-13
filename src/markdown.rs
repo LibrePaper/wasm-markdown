@@ -362,7 +362,10 @@ mod tests {
     #[test]
     fn a_short_quarto_table_has_no_colgroup() {
         let html = quarto_html("| a | b |\n|---|---|\n| 1 | 2 |\n");
-        assert!(html.contains("<table>") && !html.contains("colgroup"), "{html}");
+        assert!(
+            html.contains("<table>") && !html.contains("colgroup"),
+            "{html}"
+        );
         assert!(!html.contains("lp-colwidths"), "{html}");
     }
 
@@ -386,7 +389,10 @@ mod tests {
 
     #[test]
     fn a_marker_without_a_table_is_dropped() {
-        assert_eq!(colwidths("<p>x</p>\n<!-- lp-colwidths 50.00 50.00 -->\n<p>y</p>"), "<p>x</p>\n\n<p>y</p>");
+        assert_eq!(
+            colwidths("<p>x</p>\n<!-- lp-colwidths 50.00 50.00 -->\n<p>y</p>"),
+            "<p>x</p>\n\n<p>y</p>"
+        );
     }
 
     #[test]

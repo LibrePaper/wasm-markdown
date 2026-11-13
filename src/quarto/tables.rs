@@ -35,9 +35,11 @@ fn mode(value: &Yaml) -> Mode {
         Yaml::Str(s) => match s.trim().to_ascii_lowercase().as_str() {
             "false" => Mode::False,
             "auto" => Mode::Auto,
-            t if t.starts_with('[') => numbers(t.trim_matches(|c| c == '[' || c == ']')
-                .split(',')
-                .map(|n| n.trim().parse::<f64>().ok()))
+            t if t.starts_with('[') => numbers(
+                t.trim_matches(|c| c == '[' || c == ']')
+                    .split(',')
+                    .map(|n| n.trim().parse::<f64>().ok()),
+            )
             .map_or(Mode::True, Mode::List),
             _ => Mode::True,
         },
@@ -95,7 +97,9 @@ fn caption_attrs(lines: &[&str], start: usize, end: usize) -> Option<Yaml> {
     let below = Some(end);
     let candidates = [
         above,
-        above.filter(|&a| lines[a].trim().is_empty()).and_then(|a| a.checked_sub(1)),
+        above
+            .filter(|&a| lines[a].trim().is_empty())
+            .and_then(|a| a.checked_sub(1)),
         below,
         below.filter(|&b| near(Some(b)) == Some("")).map(|b| b + 1),
     ];
@@ -147,7 +151,9 @@ fn widths(lines: &[&str], start: usize, end: usize, ctx: &Context) -> Option<Vec
                 .collect()
         }
         Mode::True | Mode::Auto => {
-            let linked = table.iter().any(|l| l.contains("](") || l.contains("<http"));
+            let linked = table
+                .iter()
+                .any(|l| l.contains("](") || l.contains("<http"));
             let long = table.iter().any(|l| l.chars().count() > LONG_LINE);
             if !long || (mode == Mode::Auto && linked) {
                 return None;
@@ -203,7 +209,10 @@ mod tests {
     #[test]
     fn a_long_line_gives_dash_proportional_widths() {
         let d = compose(LONG).markdown;
-        assert!(d.starts_with("<!-- lp-colwidths 25.00 75.00 -->\n| a | b |"), "{d}");
+        assert!(
+            d.starts_with("<!-- lp-colwidths 25.00 75.00 -->\n| a | b |"),
+            "{d}"
+        );
     }
 
     #[test]
@@ -215,7 +224,10 @@ mod tests {
     #[test]
     fn auto_skips_a_table_with_a_link_only() {
         let linked = LONG.replace("| 1 |", "| [x](https://e.test) |");
-        assert_eq!(marker(&format!("---\ntbl-colwidths: auto\n---\n\n{linked}")), None);
+        assert_eq!(
+            marker(&format!("---\ntbl-colwidths: auto\n---\n\n{linked}")),
+            None
+        );
         assert!(marker(&format!("---\ntbl-colwidths: auto\n---\n\n{LONG}")).is_some());
     }
 
@@ -230,7 +242,8 @@ mod tests {
 
     #[test]
     fn a_short_list_repeats_its_last_value() {
-        let source = "| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |\n\n: Cap {tbl-colwidths=\"[20,40]\"}\n";
+        let source =
+            "| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |\n\n: Cap {tbl-colwidths=\"[20,40]\"}\n";
         assert_eq!(
             marker(source).as_deref(),
             Some("<!-- lp-colwidths 20.00 40.00 40.00 -->")
@@ -260,7 +273,9 @@ mod tests {
         let source = format!("{LONG}\n: Caption {{#tbl-x}}\n");
         let d = compose(&source).markdown;
         let figure = d.find("<figure").expect(&d);
-        let at = d.find("<!-- lp-colwidths 25.00 75.00 -->\n| a | b |").expect(&d);
+        let at = d
+            .find("<!-- lp-colwidths 25.00 75.00 -->\n| a | b |")
+            .expect(&d);
         assert!(figure < at, "{d}");
     }
 

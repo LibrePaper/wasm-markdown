@@ -765,7 +765,11 @@ pub fn draft(
     Draft {
         markdown: out.lines.join("\n"),
         line_map: out.map.iter().map(|m| m.and_then(main_line)).collect(),
-        origin: out.origin.iter().map(|&(a, b)| (anchor(a), anchor(b))).collect(),
+        origin: out
+            .origin
+            .iter()
+            .map(|&(a, b)| (anchor(a), anchor(b)))
+            .collect(),
         diagnostics,
     }
 }

@@ -9,9 +9,7 @@
 use crate::diagnostic::Diagnostic;
 
 use super::front_matter::parse_front_matter;
-use super::shortcodes::{
-    block_include, cycle_span, resolve, unavailable_span, MAX_INCLUDE_DEPTH,
-};
+use super::shortcodes::{block_include, cycle_span, resolve, unavailable_span, MAX_INCLUDE_DEPTH};
 use super::{fence_closes, fence_open, warning, Strings};
 
 /// Where a line of the expanded text comes from.
@@ -213,7 +211,10 @@ mod tests {
             "Text\n{{< include a.qmd >}}",
             &[
                 ("a.qmd", "A\n{{< include b.qmd >}}"),
-                ("b.qmd", "B\n\n{{< include a.qmd >}}\n{{< include gone.qmd >}}"),
+                (
+                    "b.qmd",
+                    "B\n\n{{< include a.qmd >}}\n{{< include gone.qmd >}}",
+                ),
             ],
         );
         let cycle = d
