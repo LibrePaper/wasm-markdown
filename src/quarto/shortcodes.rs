@@ -9,10 +9,10 @@ use crate::page::escape;
 use super::cells::option;
 use super::front_matter::parse_front_matter;
 use super::front_matter::{get, set, Yaml};
-use super::{fence_closes, fence_open, parse, Context, Out};
+use super::{fence_closes, fence_open, parse, Context, Out, Strings};
 
 /// How deep includes may nest before the draft calls it a cycle.
-const MAX_INCLUDE_DEPTH: usize = 8;
+pub(crate) const MAX_INCLUDE_DEPTH: usize = 8;
 
 /// Where a line being expanded comes from.
 pub(crate) struct Site<'a> {
@@ -111,17 +111,44 @@ pub(crate) fn has_unsupported_shortcode(line: &str) -> bool {
     false
 }
 
+/// The file an include's arguments name: the first word after a space.
+fn include_target(args: &str) -> Option<&str> {
+    let rest = args.trim_start();
+    if rest.len() == args.len() {
+        return None;
+    }
+    let file = &rest[..rest.find([' ', '>']).unwrap_or(rest.len())];
+    (!file.is_empty()).then_some(file)
+}
+
+/// The file a line names when the whole line is one unescaped
+/// `{{< include file >}}`.
+pub(crate) fn block_include(line: &str) -> Option<&str> {
+    let line = line.trim();
+    let call = find_shortcode(line, 0)?;
+    (call.start == 0 && call.end == line.len() && call.name == "include")
+        .then(|| include_target(call.args))
+        .flatten()
+}
+
+/// The note that stands for an include whose file is not available.
+pub(crate) fn unavailable_span(strings: &Strings, name: &str) -> String {
+    let message = strings.include_unavailable.replace("{name}", &escape(name));
+    format!("<span class=\"quarto-diagnostic\">{message}</span>")
+}
+
+/// The note that stands for an include that loops or nests too deep.
+pub(crate) fn cycle_span(strings: &Strings, normalized: &str) -> String {
+    let message = strings
+        .include_cycle
+        .replace("{normalized}", &escape(normalized));
+    format!("<span class=\"quarto-diagnostic\">{message}</span>")
+}
+
 /// The text a shortcode stands for, or none to leave it as written.
 pub(crate) fn expand(name: &str, args: &str, ctx: &mut Context, site: &Site) -> Option<String> {
     match name {
-        "include" => {
-            let rest = args.trim_start();
-            if rest.len() == args.len() {
-                return None;
-            }
-            let file = &rest[..rest.find([' ', '>']).unwrap_or(rest.len())];
-            (!file.is_empty()).then(|| include(ctx, file, site))
-        }
+        "include" => include_target(args).map(|file| include(ctx, file, site)),
         "pagebreak" => Some("<div class=\"pagebreak\"></div>".to_string()),
         "kbd" => kbd(args),
         "video" => video(args),
@@ -437,7 +464,11 @@ pub(crate) fn expand_line(line: &str, ctx: &mut Context, site: &Site) -> String 
 
 /// Finds an include's file: relative to the including file, never absolute,
 /// never climbing above the root.
-fn resolve(ctx: &Context, name: &str, source_name: &str) -> Option<(String, String)> {
+pub(crate) fn resolve(
+    files: &dyn Fn(&str) -> Option<String>,
+    name: &str,
+    source_name: &str,
+) -> Option<(String, String)> {
     let requested = name.replace('\\', "/");
     let drive = requested.as_bytes().get(1) == Some(&b':')
         && requested
@@ -464,9 +495,9 @@ fn resolve(ctx: &Context, name: &str, source_name: &str) -> Option<(String, Stri
         }
     }
     let normalized = normalized.join("/");
-    (ctx.files)(&normalized)
+    files(&normalized)
         .map(|text| (normalized.clone(), text))
-        .or_else(|| (ctx.files)(&requested).map(|text| (requested.clone(), text)))
+        .or_else(|| files(&requested).map(|text| (requested.clone(), text)))
 }
 
 fn include(ctx: &mut Context, name: &str, site: &Site) -> String {
@@ -476,18 +507,14 @@ fn include(ctx: &mut Context, name: &str, site: &Site) -> String {
         source_name,
         line,
     } = *site;
-    let Some((normalized, text)) = resolve(ctx, name, source_name) else {
+    let Some((normalized, text)) = resolve(ctx.files, name, source_name) else {
         ctx.report(
             "quarto_include_unauthorized",
             format!("name={name}"),
             source_name,
             line,
         );
-        let message = ctx
-            .strings
-            .include_unavailable
-            .replace("{name}", &escape(name));
-        return format!("<span class=\"quarto-diagnostic\">{message}</span>");
+        return unavailable_span(ctx.strings, name);
     };
     if depth >= MAX_INCLUDE_DEPTH || seen.contains(&normalized) {
         ctx.report(
@@ -496,11 +523,7 @@ fn include(ctx: &mut Context, name: &str, site: &Site) -> String {
             source_name,
             line,
         );
-        let message = ctx
-            .strings
-            .include_cycle
-            .replace("{normalized}", &escape(&normalized));
-        return format!("<span class=\"quarto-diagnostic\">{message}</span>");
+        return cycle_span(ctx.strings, &normalized);
     }
     let mut next = seen.to_vec();
     next.push(normalized.clone());

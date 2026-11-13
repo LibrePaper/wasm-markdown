@@ -11,7 +11,8 @@
 //! - fenced divs become `<div>` elements around their rendered Markdown, nested
 //!   divs included; shortcodes this renderer does not understand are shown
 //!   verbatim, so no half of them is rendered as Markdown;
-//! - `{{< include >}}` is expanded from the files the host handed over;
+//! - `{{< include >}}` is expanded from the files the host handed over, a
+//!   whole-line one before the parse so its content is part of the document;
 //! - `@fig-x`, `@tbl-x`, `@sec-x`, `@eq-x` and `@lst-x` become numbered links
 //!   when the target exists, and stay text when it does not.
 //!
@@ -29,6 +30,7 @@
 //! - `divs.rs` -- the div tree, div markup and bracketed spans (44vp);
 //! - `refs.rs` -- cross-reference numbering, resolution, heading ids (r857);
 //! - `shortcodes.rs` -- include expansion and shortcodes by name (g7cv);
+//! - `includes.rs` -- block-level includes, spliced in before the parse;
 //! - `attrs.rs` -- the `{#id .class key=value}` parser, shared (scaffold,
 //!   mww4); read it, do not edit it.
 //!
@@ -43,6 +45,7 @@ mod attrs;
 mod cells;
 mod divs;
 mod front_matter;
+mod includes;
 mod outputs;
 mod refs;
 mod shortcodes;
@@ -536,10 +539,15 @@ pub fn draft(
     extras: &Extras,
     for_pandoc: bool,
 ) -> Draft {
-    let lines: Vec<&str> = source
+    let main_lines: Vec<&str> = source
         .split('\n')
         .map(|l| l.strip_suffix('\r').unwrap_or(l))
         .collect();
+    // Block-level includes are spliced in first, so everything below sees one
+    // document; `expanded.origin` says where each line really is.
+    let expanded = includes::expand(&main_lines, path, files, &extras.strings);
+    let lines: Vec<&str> = expanded.lines.iter().map(String::as_str).collect();
+    let origin = &expanded.origin;
     let parsed = parse(&lines);
     let defaults: Map = match get(&parsed.fm.meta, "execute") {
         Some(Yaml::Map(m)) => m.clone(),
@@ -580,7 +588,12 @@ pub fn draft(
             if option(&cell.options, &defaults, "include") == Some(&Yaml::Bool(false)) {
                 continue;
             }
-            if let Some(o) = extras.outputs.iter().find(|o| o.line == cell.start + 1) {
+            // A cell of an included file has no saved output.
+            let at = &origin[cell.start];
+            if !at.main {
+                continue;
+            }
+            if let Some(o) = extras.outputs.iter().find(|o| o.line == at.line + 1) {
                 outputs.insert(cell.start, o);
             }
         }
@@ -685,11 +698,12 @@ pub fn draft(
                         continue;
                     }
                 }
+                let at = &origin[i];
                 let site = Site {
-                    depth: 0,
-                    seen: &[],
-                    source_name: path,
-                    line: i + 1,
+                    depth: at.chain.len(),
+                    seen: &at.chain,
+                    source_name: &at.file,
+                    line: at.line + 1,
                 };
                 let mut expanded = shortcodes::expand_line(line, &mut ctx, &site);
                 if refs::is_heading(&expanded) {
@@ -722,12 +736,33 @@ pub fn draft(
         }
     }
 
-    let mut diagnostics = parsed.diagnostics.clone();
+    // The parse saw the expanded text; its warnings go back to the real file
+    // and line.
+    let mut diagnostics: Vec<Diagnostic> = parsed
+        .diagnostics
+        .iter()
+        .map(|d| {
+            let mut d = d.clone();
+            if d.file.is_empty() && d.line > 0 {
+                if let Some(at) = origin.get(d.line - 1) {
+                    if !at.main {
+                        d.file = at.file.clone();
+                    }
+                    d.line = at.line + 1;
+                }
+            }
+            d
+        })
+        .collect();
+    diagnostics.extend(expanded.diagnostics.iter().cloned());
     diagnostics.append(&mut ctx.diagnostics);
+    // Back to main-file lines: included text has none of its own.
+    let main_line = |i: usize| origin.get(i).filter(|at| at.main).map(|at| at.line + 1);
+    let anchor = |i: usize| origin.get(i).map_or(i, |at| at.anchor) + 1;
     Draft {
         markdown: out.lines.join("\n"),
-        line_map: out.map.iter().map(|m| m.map(|n| n + 1)).collect(),
-        origin: out.origin.iter().map(|&(a, b)| (a + 1, b + 1)).collect(),
+        line_map: out.map.iter().map(|m| m.and_then(main_line)).collect(),
+        origin: out.origin.iter().map(|&(a, b)| (anchor(a), anchor(b))).collect(),
         diagnostics,
     }
 }
