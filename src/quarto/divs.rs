@@ -273,10 +273,16 @@ fn capitalised(word: &str) -> String {
 }
 
 fn callout_open(div: &Div, kind: &str, lines: &[&str], ctx: &Context) -> String {
-    let title = attr_text(&div.attrs, "title")
+    let given = attr_text(&div.attrs, "title")
         .or_else(|| leading_heading(div, lines).map(|h| h.1))
-        .filter(|t| !t.trim().is_empty())
-        .unwrap_or_else(|| capitalised(kind));
+        .filter(|t| !t.trim().is_empty());
+    // A callout with an id like `nte-x` is numbered: `Note 1`, then the title.
+    let title = match (ctx.refs.callout_label(&div.id), given) {
+        (Some(label), Some(t)) => format!("{label}{} {t}", ctx.refs.title_delimiter()),
+        (Some(label), None) => label,
+        (None, Some(t)) => t,
+        (None, None) => capitalised(kind),
+    };
     let mut classes = vec!["callout".to_string(), format!("callout-{kind}")];
     // The front matter's `callout-appearance` and `callout-icon` are the
     // defaults for a callout that has no `appearance` or `icon` of its own.

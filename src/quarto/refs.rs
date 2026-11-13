@@ -23,10 +23,10 @@ use super::{backtick_run, code_span_end, fence_closes, fence_open, prose, Contex
 // ------------------------------------------------------------- references
 
 /// Id prefixes of numbered targets: figures, tables, sections, equations,
-/// listings and the theorem family.
-const PREFIXES: [&str; 15] = [
+/// listings, the theorem family and the numbered callouts.
+const PREFIXES: [&str; 20] = [
     "fig", "tbl", "sec", "eq", "lst", "thm", "lem", "cor", "prp", "cnj", "def", "exm", "exr",
-    "sol", "rem",
+    "sol", "rem", "nte", "tip", "wrn", "cau", "imp",
 ];
 
 /// The theorem family: numbered per kind, rendered as `div.theorem`.
@@ -38,11 +38,6 @@ fn prefix_kind(id: &str) -> Option<&'static str> {
     PREFIXES
         .into_iter()
         .find(|k| id.strip_prefix(k).is_some_and(|rest| rest.starts_with('-')))
-}
-
-/// Whether a div id starts with a cross-reference prefix (`fig-`, `thm-`...).
-pub(crate) fn has_prefix(id: &str) -> bool {
-    prefix_kind(id).is_some()
 }
 
 fn default_word(kind: &str) -> &'static str {
@@ -62,48 +57,237 @@ fn default_word(kind: &str) -> &'static str {
         "exr" => "Exercise",
         "sol" => "Solution",
         "rem" => "Remark",
+        "nte" => "Note",
+        "tip" => "Tip",
+        "wrn" => "Warning",
+        "cau" => "Caution",
+        "imp" => "Important",
         "proof" => "Proof",
         _ => "",
     }
 }
 
+/// A custom float kind of `crossref: custom:`: `::: {#vid-x}` is numbered
+/// and referred to like a figure.
+struct Custom {
+    key: String,
+    /// `reference-prefix`: what a reference says (`Video 1`).
+    name: String,
+    /// `caption-prefix`: what the caption label says; the name by default.
+    prefix: String,
+}
+
 /// The words of the `crossref:` front matter key: `fig-prefix` in a
-/// reference, `fig-title` in a caption label, `title-delim` after it.
+/// reference, `fig-title` in a caption label, `title-delim` after it, and
+/// the options that shape numbers and references.
 #[derive(Default)]
-struct Words(Map);
+struct Words {
+    map: Map,
+    customs: Vec<Custom>,
+}
 
 impl Words {
-    fn new(meta: &Map) -> Words {
-        match get(meta, "crossref") {
-            Some(Yaml::Map(m)) => Words(m.clone()),
-            _ => Words(Vec::new()),
+    fn new(meta: &Map, lines: &[&str], front: usize) -> Words {
+        Words {
+            map: match get(meta, "crossref") {
+                Some(Yaml::Map(m)) => m.clone(),
+                _ => Vec::new(),
+            },
+            customs: custom_kinds(&lines[..front.min(lines.len())]),
         }
     }
 
     fn lookup(&self, key: &str) -> Option<String> {
-        get(&self.0, key).map(Yaml::text)
+        get(&self.map, key).map(Yaml::text)
+    }
+
+    fn custom(&self, kind: &str) -> Option<&Custom> {
+        self.customs.iter().find(|c| c.key == kind)
+    }
+
+    /// The kind an id belongs to: a built-in prefix or a custom key.
+    fn kind_of(&self, id: &str) -> Option<String> {
+        prefix_kind(id).map(str::to_string).or_else(|| {
+            self.customs
+                .iter()
+                .find(|c| id.strip_prefix(c.key.as_str()).is_some_and(|r| r.starts_with('-')))
+                .map(|c| c.key.clone())
+        })
     }
 
     fn title(&self, kind: &str) -> String {
-        self.lookup(&format!("{kind}-title"))
-            .unwrap_or_else(|| default_word(kind).to_string())
+        self.lookup(&format!("{kind}-title")).unwrap_or_else(|| {
+            self.custom(kind)
+                .map_or_else(|| default_word(kind).to_string(), |c| c.prefix.clone())
+        })
     }
 
     fn prefix(&self, kind: &str) -> String {
-        self.lookup(&format!("{kind}-prefix"))
-            .unwrap_or_else(|| default_word(kind).to_string())
+        self.lookup(&format!("{kind}-prefix")).unwrap_or_else(|| {
+            self.custom(kind)
+                .map_or_else(|| default_word(kind).to_string(), |c| c.name.clone())
+        })
     }
 
     fn delimiter(&self) -> String {
         self.lookup("title-delim")
             .unwrap_or_else(|| ".".to_string())
     }
+
+    /// Between the references of one citation group.
+    fn ref_delim(&self) -> String {
+        self.lookup("ref-delim").unwrap_or_else(|| ",".to_string())
+    }
+
+    /// Whether a reference is a link; `ref-hyperlink: false` makes it text.
+    fn hyperlinks(&self) -> bool {
+        get(&self.map, "ref-hyperlink").is_none_or(Yaml::truthy)
+    }
+
+    /// `chapters: true`: numbers start with the number of the chapter.
+    fn chapters(&self) -> bool {
+        get(&self.map, "chapters").is_some_and(Yaml::truthy)
+    }
+
+    /// The number `n` of a `kind` as its label style writes it: `labels` for
+    /// all, `fig-labels` and so on for one kind, `subref-labels` for
+    /// subfigures. `chapter` is put in front.
+    fn number(&self, kind: &str, n: usize, chapter: Option<&str>) -> String {
+        let default = if kind == "subref" { "alpha a" } else { "arabic" };
+        let style = self
+            .lookup(&format!("{kind}-labels"))
+            .or_else(|| (kind != "subref").then(|| self.lookup("labels")).flatten())
+            .unwrap_or_else(|| default.to_string());
+        let style = style.trim();
+        let text = if let Some(rest) = style.strip_prefix("alpha") {
+            let start = rest.trim().chars().next().unwrap_or('a');
+            char::from_u32(start as u32 + n.max(1) as u32 - 1)
+                .unwrap_or(start)
+                .to_string()
+        } else if style.starts_with("roman") || style.starts_with("Roman") {
+            // Quarto: lower case only when the style ends in `i`.
+            roman(n, style.ends_with('i'))
+        } else {
+            n.to_string()
+        };
+        match chapter {
+            Some(c) => format!("{c}.{text}"),
+            None => text,
+        }
+    }
+}
+
+fn roman(mut n: usize, lower: bool) -> String {
+    const NUMERALS: [(usize, &str); 13] = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+    let mut out = String::new();
+    for (value, text) in NUMERALS {
+        while n >= value {
+            out.push_str(text);
+            n -= value;
+        }
+    }
+    if lower {
+        out.to_lowercase()
+    } else {
+        out
+    }
+}
+
+/// The `crossref: custom:` entries of the front matter, from the lines
+/// themselves: the front matter reader keeps no lists of maps. Both the flow
+/// form (`custom: [{kind: float, key: vid, reference-prefix: Video}]`) and
+/// the block form are read. Only floats with a key count.
+fn custom_kinds(front: &[&str]) -> Vec<Custom> {
+    let unquote = |v: &str| v.trim().trim_matches(['"', '\'']).to_string();
+    let mut entries: Vec<Vec<(String, String)>> = Vec::new();
+    let Some(at) = front.iter().position(|l| l.trim_start().starts_with("custom:")) else {
+        return Vec::new();
+    };
+    let indent = front[at].len() - front[at].trim_start().len();
+    let rest = front[at].trim_start()["custom:".len()..].trim();
+    if rest.starts_with('[') {
+        // `[{a: b, c: d}, {...}]`: the braces hold the entries.
+        let mut depth = 0;
+        let mut from = 0;
+        for (i, c) in rest.char_indices() {
+            match c {
+                '{' => {
+                    if depth == 0 {
+                        from = i + 1;
+                    }
+                    depth += 1;
+                }
+                '}' if depth > 0 => {
+                    depth -= 1;
+                    if depth == 0 {
+                        entries.push(
+                            rest[from..i]
+                                .split(',')
+                                .filter_map(|kv| kv.split_once(':'))
+                                .map(|(k, v)| (k.trim().to_string(), unquote(v)))
+                                .collect(),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    } else {
+        for line in &front[at + 1..] {
+            let t = line.trim_start();
+            if t.is_empty() {
+                continue;
+            }
+            if line.len() - t.len() <= indent && !t.starts_with("- ") {
+                break;
+            }
+            let (item, body) = match t.strip_prefix("- ") {
+                Some(body) => (true, body),
+                None => (false, t),
+            };
+            if item {
+                entries.push(Vec::new());
+            }
+            if let (Some(entry), Some((k, v))) = (entries.last_mut(), body.split_once(':')) {
+                entry.push((k.trim().to_string(), unquote(v)));
+            }
+        }
+    }
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let field = |k: &str| entry.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+            if field("kind").is_some_and(|k| k != "float") {
+                return None;
+            }
+            let key = field("key").filter(|k| !k.is_empty())?;
+            let name = field("reference-prefix")
+                .or_else(|| field("caption-prefix"))
+                .unwrap_or_else(|| key.clone());
+            let prefix = field("caption-prefix").unwrap_or_else(|| name.clone());
+            Some(Custom { key, name, prefix })
+        })
+        .collect()
 }
 
 /// A numbered target: `1`, `2.1` (a section), `A.1` (an appendix section) or
 /// `1b` (a subfigure).
 struct Target {
-    kind: &'static str,
+    kind: String,
     number: String,
 }
 
@@ -115,6 +299,8 @@ struct Heading {
     id: String,
     number: Option<String>,
     decorate: bool,
+    /// Written as a title line and an underline; the draft makes it ATX.
+    setext: bool,
 }
 
 /// What a div needs at its fences: the caption it gave up, a theorem's name
@@ -122,7 +308,7 @@ struct Heading {
 #[derive(Default)]
 struct DivInfo {
     id: String,
-    kind: &'static str,
+    kind: String,
     name: String,
     caption: String,
     /// The first line of content, when the label can start it.
@@ -177,21 +363,52 @@ pub(crate) struct Refs {
     skip: HashSet<usize>,
     /// First content line of a div -> the line of its opening fence.
     inline: HashMap<usize, usize>,
-    /// Subfigure id -> `a`, `b`...
-    letters: HashMap<String, char>,
+    /// Subfigure id -> `a`, `b`... (in the `subref-labels` style).
+    letters: HashMap<String, String>,
     toc: String,
 }
 
 impl Refs {
-    /// `Figure 1`: what a reference to `id` says.
-    fn reference_text(&self, id: &str) -> Option<String> {
+    /// `Figure 1`: what a reference to `id` says. `bare` leaves the prefix
+    /// out (`[-@fig-x]`), `custom` replaces it (`[Fig. @fig-x]`) and `upper`
+    /// capitalises it (`@Fig-x`).
+    fn reference_text(
+        &self,
+        id: &str,
+        bare: bool,
+        custom: Option<&str>,
+        upper: bool,
+    ) -> Option<String> {
         let target = self.targets.get(id)?;
-        let prefix = self.words.prefix(target.kind);
+        let mut prefix = match (bare, custom) {
+            (true, _) => String::new(),
+            (false, Some(text)) => text.to_string(),
+            (false, None) => self.words.prefix(&target.kind),
+        };
+        if upper {
+            let mut chars = prefix.chars();
+            prefix = chars
+                .next()
+                .map(|c| c.to_uppercase().chain(chars).collect())
+                .unwrap_or_default();
+        }
         Some(if prefix.is_empty() {
             target.number.clone()
         } else {
             format!("{prefix} {}", target.number)
         })
+    }
+
+    /// `Note 1` for a numbered callout, the start of its title.
+    pub(crate) fn callout_label(&self, id: &str) -> Option<String> {
+        let target = self.targets.get(id)?;
+        matches!(target.kind.as_str(), "nte" | "tip" | "wrn" | "cau" | "imp")
+            .then(|| format!("{} {}", self.words.title(&target.kind), target.number))
+    }
+
+    /// The delimiter between a caption label and its text.
+    pub(crate) fn title_delimiter(&self) -> String {
+        self.words.delimiter()
     }
 
     /// Whether `id` is a numbered target of the document.
@@ -206,10 +423,11 @@ impl Refs {
         }
         let delimiter = self.words.delimiter();
         match self.targets.get(id) {
-            Some(t) => format!("{} {}{delimiter}", self.words.title(t.kind), t.number),
+            Some(t) => format!("{} {}{delimiter}", self.words.title(&t.kind), t.number),
             None => format!(
                 "{}{delimiter}",
-                self.words.title(prefix_kind(id).unwrap_or("fig"))
+                self.words
+                    .title(&self.words.kind_of(id).unwrap_or_else(|| "fig".into()))
             ),
         }
     }
@@ -222,7 +440,7 @@ impl Refs {
                 escape(&self.words.title("proof"))
             );
         }
-        let title = self.words.title(info.kind);
+        let title = self.words.title(&info.kind);
         let head = match self.targets.get(&info.id) {
             Some(t) if !info.id.is_empty() => format!("{title} {}", t.number),
             _ => title,
@@ -249,6 +467,11 @@ impl Refs {
         }
         out.push_str("</figcaption>");
         out
+    }
+
+    /// Whether `kind` is a float of `crossref: custom:`.
+    fn is_custom(&self, kind: &str) -> bool {
+        self.words.custom(kind).is_some()
     }
 
     fn image_html(&self, img: &Image) -> String {
@@ -486,6 +709,7 @@ struct HeadingLine {
     classes: Vec<String>,
     unnumbered: bool,
     has_attrs: bool,
+    setext: bool,
 }
 
 fn parse_heading(line: &str) -> Option<HeadingLine> {
@@ -502,6 +726,7 @@ fn parse_heading(line: &str) -> Option<HeadingLine> {
         classes: Vec::new(),
         unnumbered: false,
         has_attrs: false,
+        setext: false,
     };
     if let Some(inner) = attrs {
         let parsed = parse_attributes(inner);
@@ -512,6 +737,34 @@ fn parse_heading(line: &str) -> Option<HeadingLine> {
         out.has_attrs = true;
     }
     Some(out)
+}
+
+/// A setext heading: a plain title line, then `===` (level 1) or `---`
+/// (level 2) under it, after a blank line or a div fence.
+fn parse_setext(lines: &[&str], live: &[bool], front: usize, i: usize) -> Option<HeadingLine> {
+    let under = lines.get(i + 1)?;
+    if !live[i] || !live.get(i + 1).copied().unwrap_or(false) || !is_plain_paragraph(lines[i]) {
+        return None;
+    }
+    let after_gap = i <= front
+        || lines[i - 1].trim().is_empty()
+        || divs::div_fence(lines[i - 1]).is_some();
+    let t = under.trim_end();
+    let lead = t.len() - t.trim_start().len();
+    let t = t.trim_start();
+    let level = match t.chars().next()? {
+        '=' if t.len() >= 2 && t.bytes().all(|b| b == b'=') => 1,
+        '-' if t.len() >= 2 && t.bytes().all(|b| b == b'-') => 2,
+        _ => return None,
+    };
+    if !after_gap || lead > 3 {
+        return None;
+    }
+    let parsed = parse_heading(&format!("{} {}", "#".repeat(level), lines[i].trim()))?;
+    Some(HeadingLine {
+        setext: true,
+        ..parsed
+    })
 }
 
 /// Lines outside the front matter and outside code fences.
@@ -826,7 +1079,7 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
     let meta = &parsed.fm.meta;
     let live = live_lines(lines, parsed.fm.lines);
     let mut refs = Refs {
-        words: Words::new(meta),
+        words: Words::new(meta, lines, parsed.fm.lines),
         ..Refs::default()
     };
     // (line, id) of everything that takes a number.
@@ -845,20 +1098,27 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
 
     // Divs: captions move to the figcaption, names to the label.
     for d in &parsed.divs {
-        let pk = prefix_kind(&d.id);
+        let pk = refs.words.kind_of(&d.id);
         if pk.is_some() {
-            let parent = d
-                .parent
-                .filter(|&p| pk == Some("fig") && prefix_kind(&parsed.divs[p].id) == Some("fig"));
+            let parent = d.parent.filter(|&p| {
+                pk.as_deref() == Some("fig") && prefix_kind(&parsed.divs[p].id) == Some("fig")
+            });
             match parent {
                 Some(p) => subs.push((d.start, d.id.clone(), p)),
                 None => cands.push((d.start, d.id.clone())),
             }
         }
-        let kind = match pk {
-            Some(k) if k == "fig" || k == "tbl" || THEOREMS.contains(&k) => Some(k),
+        let kind: Option<String> = match pk {
+            Some(k)
+                if k == "fig"
+                    || k == "tbl"
+                    || THEOREMS.contains(&k.as_str())
+                    || refs.is_custom(&k) =>
+            {
+                Some(k)
+            }
             Some(_) => None,
-            None => class_kind(d),
+            None => class_kind(d).map(str::to_string),
         };
         let Some(kind) = kind else { continue };
         let mut info = DivInfo {
@@ -866,7 +1126,7 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
             kind,
             ..DivInfo::default()
         };
-        if kind == "fig" || kind == "tbl" {
+        if info.kind == "fig" || info.kind == "tbl" || refs.is_custom(&info.kind) {
             if let Some((text, range)) = last_paragraph(lines, &live, &d.content) {
                 info.caption = text;
                 refs.skip.extend(range);
@@ -937,10 +1197,17 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
         .iter()
         .flat_map(|d| divs::consumed_headings(d, lines))
         .collect();
-    let headings: Vec<(usize, HeadingLine)> = (0..lines.len())
-        .filter(|&i| live[i] && !refs.skip.contains(&i) && !consumed.contains(&i))
-        .filter_map(|i| parse_heading(lines[i]).map(|h| (i, h)))
-        .collect();
+    let mut headings: Vec<(usize, HeadingLine)> = Vec::new();
+    for i in 0..lines.len() {
+        if !live[i] || refs.skip.contains(&i) || consumed.contains(&i) {
+            continue;
+        }
+        let found = parse_heading(lines[i])
+            .or_else(|| parse_setext(lines, &live, parsed.fm.lines, i));
+        if let Some(h) = found {
+            headings.push((i, h));
+        }
+    }
     let base = headings.iter().map(|(_, h)| h.level).min().unwrap_or(1);
     let appendix_divs: Vec<(usize, Range<usize>)> = parsed
         .divs
@@ -971,22 +1238,36 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
     let mut counters = start_counters;
     let mut region: Option<usize> = None;
     let mut appendix_level = base;
-    let mut anchorizer = comrak::Anchorizer::new();
     let mut section_numbers: HashMap<String, String> = HashMap::new();
-    let mut toc_items: Vec<(usize, String, Option<String>, String)> = Vec::new();
+    // Every heading in order, with its depth in the contents when listed.
+    let mut toc_rows: Vec<TocRow> = Vec::new();
+    // `chapters: true`: where each chapter starts and what it is called.
+    let mut chapter_marks: Vec<(usize, String)> = Vec::new();
+    let mut chapter_count = 0;
     for (line, h) in &headings {
         let key = region_of(*line);
         if key != region {
             region = key;
             counters = if key.is_some() { [0; 6] } else { start_counters };
             appendix_level = h.level;
+            chapter_count = 0;
         }
         let appendix = key.is_some();
-        let anchor = anchorizer.anchorize(&slug_text(&h.title));
         let depth = h
             .level
             .saturating_sub(if appendix { appendix_level } else { base })
             + 1;
+        if depth == 1 && !h.unnumbered {
+            chapter_count += 1;
+            chapter_marks.push((
+                *line,
+                if appendix {
+                    letter(chapter_count)
+                } else {
+                    chapter_count.to_string()
+                },
+            ));
+        }
         let number = if number_sections && !h.unnumbered && depth <= depth_limit {
             counters[depth - 1] += 1;
             for c in counters.iter_mut().skip(depth) {
@@ -1019,13 +1300,17 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
             }
         }
         let toc_depth_of = h.level.saturating_sub(base) + 1;
-        if toc_on && toc_depth_of <= toc_depth && !h.classes.iter().any(|c| c == "unlisted") {
-            let link = if h.id.is_empty() {
-                anchor
-            } else {
-                h.id.clone()
-            };
-            toc_items.push((toc_depth_of, link, number.clone(), plain(&h.title)));
+        toc_rows.push(TocRow {
+            listed: toc_on && toc_depth_of <= toc_depth && !h.classes.iter().any(|c| c == "unlisted"),
+            depth: toc_depth_of,
+            id: h.id.clone(),
+            number: number.clone(),
+            title: h.title.clone(),
+        });
+        let decorate = h.has_attrs || number.is_some() || shift != 0;
+        if h.setext && decorate {
+            // The underline goes: the title line becomes an ATX heading.
+            refs.skip.insert(*line + 1);
         }
         refs.headings.insert(
             *line,
@@ -1034,12 +1319,12 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
                 level: (h.level as i64 + shift).clamp(1, 6) as usize,
                 title: h.title.clone(),
                 id: h.id.clone(),
-                decorate: h.has_attrs || number.is_some() || shift != 0,
+                decorate,
+                setext: h.setext,
                 number,
             },
         );
     }
-    refs.toc = build_toc(&toc_items, &toc_title);
 
     // Table captions, then figure images and equations.
     let mut taken: HashSet<usize> = HashSet::new();
@@ -1113,21 +1398,41 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
     );
 
     // Number by kind, in document order.
-    cands.retain(|(_, id)| prefix_kind(id).is_some());
+    let words = &refs.words;
+    cands.retain(|(_, id)| words.kind_of(id).is_some());
     cands.sort_by_key(|(line, _)| *line);
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    for (_, id) in &cands {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut in_chapter: Option<String> = None;
+    for (line, id) in &cands {
         if refs.targets.contains_key(id) {
             continue;
         }
-        let kind = prefix_kind(id).unwrap_or("fig");
-        let count = counts.entry(kind).or_insert(0);
+        let kind = refs.words.kind_of(id).unwrap_or_else(|| "fig".into());
+        // With chapters the counters start again in each chapter.
+        let chapter = refs
+            .words
+            .chapters()
+            .then(|| {
+                chapter_marks
+                    .iter()
+                    .rev()
+                    .find(|(at, _)| at <= line)
+                    .map(|(_, label)| label.clone())
+            })
+            .flatten();
+        if chapter != in_chapter {
+            counts.clear();
+            in_chapter = chapter.clone();
+        }
+        let count = counts.entry(kind.clone()).or_insert(0);
         *count += 1;
-        let ordinal = count.to_string();
         let number = if kind == "sec" {
-            section_numbers.get(id).cloned().unwrap_or(ordinal)
+            section_numbers
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| count.to_string())
         } else {
-            ordinal
+            refs.words.number(&kind, *count, chapter.as_deref())
         };
         refs.targets.insert(id.clone(), Target { kind, number });
     }
@@ -1135,8 +1440,8 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
     let mut seen: HashMap<usize, u8> = HashMap::new();
     for (_, id, parent) in subs {
         let slot = seen.entry(parent).or_insert(0);
-        let sub_letter = char::from(b'a' + *slot % 26);
         *slot += 1;
+        let sub_letter = refs.words.number("subref", *slot as usize, None);
         if refs.targets.contains_key(&id) {
             continue;
         }
@@ -1148,71 +1453,219 @@ pub(crate) fn references(parsed: &Parsed, lines: &[&str]) -> Refs {
         refs.targets.insert(
             id.clone(),
             Target {
-                kind: "fig",
+                kind: "fig".to_string(),
                 number: format!("{number}{sub_letter}"),
             },
         );
         refs.letters.insert(id, sub_letter);
     }
+    // The contents, once references in headings can be resolved: the anchor
+    // of a heading comes from the text the draft will give comrak.
+    if toc_on {
+        let mut anchorizer = comrak::Anchorizer::new();
+        let mut toc_items: Vec<(usize, String, Option<String>, String)> = Vec::new();
+        for row in toc_rows {
+            let text = heading_text(&row.title, &refs);
+            let anchor = anchorizer.anchorize(&slug_text(&text));
+            if row.listed {
+                let link = if row.id.is_empty() { anchor } else { row.id };
+                toc_items.push((row.depth, link, row.number, plain(&text)));
+            }
+        }
+        refs.toc = build_toc(&toc_items, &toc_title);
+    }
     refs
+}
+
+/// One heading for the contents.
+struct TocRow {
+    listed: bool,
+    depth: usize,
+    id: String,
+    number: Option<String>,
+    title: String,
+}
+
+/// A heading's text as the draft gives it to comrak: references resolved,
+/// the markup of the HTML they make dropped.
+fn heading_text(title: &str, refs: &Refs) -> String {
+    let resolved = crossrefs(title, refs, false);
+    let mut out = String::with_capacity(resolved.len());
+    let mut chars = resolved.chars().peekable();
+    while let Some(c) = chars.next() {
+        let tag = c == '<' && chars.peek().is_some_and(|n| n.is_ascii_alphabetic() || *n == '/');
+        if tag {
+            for n in chars.by_ref() {
+                if n == '>' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn label_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b':' || b == b'-'
 }
 
-/// `@fig-x` and friends in one stretch of prose.
+/// One reference as written: `@fig-x`, `-@fig-x`, `@Fig-x` or inside
+/// brackets `[Fig. @fig-x; @tbl-y]`.
+struct Cite {
+    /// With the first letter in lower case, as targets are keyed.
+    id: String,
+    /// Written `@Fig-x`: the prefix takes a capital.
+    upper: bool,
+    /// Written `-@fig-x`: the number alone.
+    bare: bool,
+    /// Text before the `@` in brackets: it replaces the prefix.
+    prefix: Option<String>,
+}
+
+/// The cite that starts with the `@` at `at`, and where it ends.
+fn parse_cite(text: &str, at: usize, refs: &Refs) -> Option<(Cite, usize)> {
+    let rest = &text[at + 1..];
+    let first = rest.chars().next().filter(char::is_ascii_alphabetic)?;
+    let lowered = format!("{}{}", first.to_ascii_lowercase(), &rest[1..]);
+    let kind = refs.words.kind_of(&lowered)?;
+    let label_start = kind.len() + 1;
+    let b = lowered.as_bytes();
+    let mut end = label_start;
+    while end < b.len() && label_char(b[end]) {
+        end += 1;
+    }
+    if end == label_start {
+        return None;
+    }
+    while end + 1 < b.len() && b[end] == b'.' && label_char(b[end + 1]) {
+        end += 1;
+        while end < b.len() && label_char(b[end]) {
+            end += 1;
+        }
+    }
+    let cite = Cite {
+        id: lowered[..end].to_string(),
+        upper: first.is_ascii_uppercase(),
+        bare: false,
+        prefix: None,
+    };
+    Some((cite, at + 1 + end))
+}
+
+/// A bracketed group of references, `[@fig-a; Tab. @tbl-b]`, from the `[` at
+/// `start`; none unless every part of it is a reference.
+fn cite_group(text: &str, start: usize, refs: &Refs) -> Option<(Vec<Cite>, usize)> {
+    let close = start + text[start..].find(']')?;
+    if matches!(text.as_bytes().get(close + 1), Some(b'(' | b'[' | b'{')) {
+        return None;
+    }
+    let inner = &text[start + 1..close];
+    let mut cites = Vec::new();
+    let mut offset = start + 1;
+    for part in inner.split(';') {
+        let at = part.find('@')?;
+        let (before, after) = (&part[..at], offset + at);
+        let (cite, end) = parse_cite(text, after, refs)?;
+        if !text[end..offset + part.len()].trim().is_empty() {
+            return None;
+        }
+        let mut before = before.trim();
+        let mut bare = false;
+        if let Some(stripped) = before.strip_suffix('-') {
+            if stripped.is_empty() || stripped.ends_with(char::is_whitespace) {
+                before = stripped.trim_end();
+                bare = true;
+            }
+        }
+        cites.push(Cite {
+            bare,
+            prefix: (!before.is_empty()).then(|| before.to_string()),
+            ..cite
+        });
+        offset += part.len() + 1;
+    }
+    (!cites.is_empty()).then_some((cites, close + 1))
+}
+
+/// The text of a run of references, or none for the Pandoc draft when one
+/// does not resolve (Pandoc then reads it as a citation).
+fn render_cites(cites: &[Cite], refs: &Refs, pandoc: bool) -> Option<String> {
+    let links = refs.words.hyperlinks();
+    let mut parts = Vec::new();
+    for cite in cites {
+        let label = refs.reference_text(&cite.id, cite.bare, cite.prefix.as_deref(), cite.upper);
+        parts.push(match label {
+            Some(label) if pandoc && links => format!("[{label}](#{})", cite.id),
+            Some(label) if pandoc => label,
+            Some(label) if links => format!(
+                "<a class=\"quarto-crossref crossref\" href=\"#{}\">{}</a>",
+                escape(&cite.id),
+                escape(&label)
+            ),
+            Some(label) => escape(&label),
+            // Quarto's own mark for a reference it cannot resolve.
+            None if !pandoc => format!("**?@{}**", cite.id),
+            None => return None,
+        });
+    }
+    Some(parts.join(&format!("{} ", refs.words.ref_delim())))
+}
+
+/// `@fig-x` and friends in one stretch of prose: `@fig-x`, `-@fig-x` (the
+/// number alone), `@Fig-x` (a capital), `[Fig. @fig-x]` (a prefix of one's
+/// own) and `[@fig-a; @fig-b]` (several).
 ///
 /// With `pandoc` a resolved reference is a Markdown link, which Pandoc reads;
-/// otherwise it is the preview's HTML. Inline code is never rewritten.
+/// otherwise it is the preview's HTML, and one that does not resolve is
+/// Quarto's bold `?@fig-x`. Inline code is never rewritten.
 pub(crate) fn crossrefs(text: &str, refs: &Refs, pandoc: bool) -> String {
     let b = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut copied = 0;
     let mut i = 0;
-    while let Some(at) = text[i..].find(['@', '`']) {
+    while let Some(at) = text[i..].find(['@', '`', '[']) {
         let start = i + at;
-        if b[start] == b'`' {
-            i = code_span_end(text, start).unwrap_or(start + backtick_run(text, start));
-            continue;
-        }
         i = start + 1;
-        let Some(kind) = PREFIXES.into_iter().find(|k| {
-            text[start + 1..]
-                .strip_prefix(k)
-                .is_some_and(|rest| rest.starts_with('-'))
-        }) else {
-            continue;
-        };
-        let mut end = start + 1 + kind.len() + 1;
-        let label_start = end;
-        while end < b.len() && label_char(b[end]) {
-            end += 1;
-        }
-        if end == label_start {
-            continue;
-        }
-        while end + 1 < b.len() && b[end] == b'.' && label_char(b[end + 1]) {
-            end += 1;
-            while end < b.len() && label_char(b[end]) {
-                end += 1;
+        match b[start] {
+            b'`' => {
+                i = code_span_end(text, start).unwrap_or(start + backtick_run(text, start));
+            }
+            b'[' => {
+                if let Some((cites, end)) = cite_group(text, start, refs) {
+                    if let Some(html) = render_cites(&cites, refs, pandoc) {
+                        out.push_str(&text[copied..start]);
+                        out.push_str(&html);
+                        copied = end;
+                        i = end;
+                    }
+                }
+            }
+            _ => {
+                let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+                if start > 0 && word(b[start - 1]) {
+                    continue;
+                }
+                let Some((mut cite, end)) = parse_cite(text, start, refs) else {
+                    continue;
+                };
+                // `-@fig-x`, when the dash is not part of a word.
+                let mut from = start;
+                if start > 0 && b[start - 1] == b'-' && (start == 1 || !word(b[start - 2])) {
+                    cite.bare = true;
+                    from = start - 1;
+                }
+                if from >= copied {
+                    if let Some(html) = render_cites(&[cite], refs, pandoc) {
+                        out.push_str(&text[copied..from]);
+                        out.push_str(&html);
+                        copied = end;
+                    }
+                }
+                i = end;
             }
         }
-        let id = &text[start + 1..end];
-        if let Some(label) = refs.reference_text(id) {
-            out.push_str(&text[copied..start]);
-            if pandoc {
-                out.push_str(&format!("[{label}](#{id})"));
-            } else {
-                out.push_str(&format!(
-                    "<a class=\"quarto-crossref crossref\" href=\"#{}\">{}</a>",
-                    escape(id),
-                    escape(&label)
-                ));
-            }
-            copied = end;
-        }
-        i = end;
     }
     out.push_str(&text[copied..]);
     out
@@ -1232,8 +1685,8 @@ pub(crate) fn passes_through(_div: &Div, ctx: &Context) -> bool {
     ctx.for_pandoc
 }
 
-pub(crate) fn wants(div: &Div) -> bool {
-    has_prefix(&div.id) || class_kind(div).is_some() || is_appendix(div)
+pub(crate) fn wants(div: &Div, ctx: &Context) -> bool {
+    ctx.refs.divs.contains_key(&div.start) || is_appendix(div)
 }
 
 fn id_attribute(div: &Div) -> String {
@@ -1262,12 +1715,14 @@ pub(crate) fn div_open(div: &Div, ctx: &mut Context) -> Option<String> {
         return Some(format!("<section class=\"appendix\"{id}>"));
     }
     let info = refs.divs.get(&div.start)?;
-    match info.kind {
-        "fig" => {
+    match info.kind.as_str() {
+        kind if kind == "fig" || refs.is_custom(kind) => {
             let mut class = if refs.letters.contains_key(&div.id) {
                 "subfigure".to_string()
-            } else {
+            } else if kind == "fig" {
                 "figure".to_string()
+            } else {
+                format!("figure custom-float float-{kind}")
             };
             let mut style = String::new();
             if let Some(cols) = layout_columns(div) {
@@ -1301,8 +1756,8 @@ pub(crate) fn div_close(div: &Div, ctx: &mut Context) -> Option<String> {
         return Some("</section>".to_string());
     }
     let info = refs.divs.get(&div.start)?;
-    match info.kind {
-        "fig" => Some(format!(
+    match info.kind.as_str() {
+        kind if kind == "fig" || refs.is_custom(kind) => Some(format!(
             "{}</figure>",
             refs.figcaption(&div.id, &info.caption)
         )),
@@ -1319,6 +1774,12 @@ pub(crate) fn is_heading(line: &str) -> bool {
     }
     let hashes = t.bytes().take_while(|&b| b == b'#').count();
     (1..=6).contains(&hashes) && t[hashes..].chars().next().is_none_or(char::is_whitespace)
+}
+
+/// Whether the line at `index` is a heading the draft rewrites: an ATX one,
+/// or the title line of a setext one.
+pub(crate) fn is_heading_at(line: &str, index: usize, ctx: &Context) -> bool {
+    is_heading(line) || ctx.refs.headings.get(&index).is_some_and(|h| h.setext)
 }
 
 /// The replacement for heading line `index` (section number, anchor for its
@@ -1859,13 +2320,167 @@ mod tests {
                       ```{r}\n#| label: fig-shown\n#| fig-cap: Shown\n2\n```\n\n\
                       See @fig-hidden and @fig-shown.\n";
         let d = compose(source).markdown;
-        assert_has(&d, "See @fig-hidden and <a");
+        assert_has(&d, "See **?@fig-hidden** and <a");
         assert_has(&d, "href=\"#fig-shown\">Figure 1</a>");
         let source = format!("---\nexecute:\n  include: false\n---\n\n{source}");
         let d = compose(&source).markdown;
-        assert_has(&d, "See @fig-hidden and @fig-shown.");
+        assert_has(&d, "See **?@fig-hidden** and **?@fig-shown**.");
         let source = "---\nexecute:\n  include: false\n---\n\n\
                       ```{r}\n#| label: fig-back\n#| include: true\n#| fig-cap: Back\n1\n```\n\nSee @fig-back.\n";
         assert_has(&compose(source).markdown, "href=\"#fig-back\">Figure 1</a>");
+    }
+
+    fn link(id: &str, text: &str) -> String {
+        format!("<a class=\"quarto-crossref crossref\" href=\"#{id}\">{text}</a>")
+    }
+
+    const TWO_FIGURES: &str = "![A](a.png){#fig-a}\n\n![B](b.png){#fig-b}\n\n";
+
+    #[test]
+    fn a_dash_gives_the_number_alone() {
+        let d = compose(&format!("{TWO_FIGURES}See [-@fig-a] and -@fig-b.\n")).markdown;
+        assert_has(&d, &format!("See {} and {}.", link("fig-a", "1"), link("fig-b", "2")));
+    }
+
+    #[test]
+    fn a_prefix_before_the_reference_replaces_the_word() {
+        let d = compose(&format!("{TWO_FIGURES}See [Fig. @fig-b].\n")).markdown;
+        assert_has(&d, &format!("See {}.", link("fig-b", "Fig. 2")));
+    }
+
+    #[test]
+    fn several_references_are_joined_with_the_delimiter() {
+        let d = compose(&format!("{TWO_FIGURES}See [@fig-a; @fig-b].\n")).markdown;
+        assert_has(
+            &d,
+            &format!("See {}, {}.", link("fig-a", "Figure 1"), link("fig-b", "Figure 2")),
+        );
+        let d = compose(&format!(
+            "---\ncrossref:\n  ref-delim: ' and'\n---\n\n{TWO_FIGURES}See [@fig-a; @fig-b].\n"
+        ))
+        .markdown;
+        assert_has(&d, &format!("{} and {}", link("fig-a", "Figure 1"), link("fig-b", "Figure 2")));
+        // A group that is not all references is left to the citations.
+        let d = compose(&format!("{TWO_FIGURES}See [@fig-a; @smith].\n")).markdown;
+        assert_has(&d, "; @smith].");
+    }
+
+    #[test]
+    fn a_capital_makes_the_prefix_a_capital() {
+        let source = "---\ncrossref:\n  fig-prefix: fig.\n---\n\n![A](a.png){#fig-a}\n\nSee @fig-a and @Fig-a.\n";
+        let d = compose(source).markdown;
+        assert_has(&d, &format!("See {} and {}.", link("fig-a", "fig. 1"), link("fig-a", "Fig. 1")));
+    }
+
+    #[test]
+    fn ref_hyperlink_false_leaves_the_text_alone() {
+        let source = "---\ncrossref:\n  ref-hyperlink: false\n---\n\n![A](a.png){#fig-a}\n\nSee @fig-a.\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "See Figure 1.\n");
+        assert!(!d.contains("href=\"#fig-a\">Figure"), "{d}");
+    }
+
+    #[test]
+    fn an_unresolved_reference_is_a_bold_mark() {
+        let d = compose("See @fig-nope and [@tbl-nope].\n").markdown;
+        assert_has(&d, "See **?@fig-nope** and **?@tbl-nope**.");
+        // Not a reference: an email address, an ordinary citation.
+        let d = compose("Write a@fig-x.org or cite @smith.\n").markdown;
+        assert_has(&d, "a@fig-x.org or cite @smith.");
+    }
+
+    #[test]
+    fn labels_set_the_numbering_style() {
+        let source = "---\ncrossref:\n  fig-labels: alpha A\n  tbl-labels: roman i\n  labels: roman\n---\n\n\
+                      ![A](a.png){#fig-a}\n\n![B](b.png){#fig-b}\n\n$$ x $$ {#eq-x}\n\n$$ y $$ {#eq-y}\n\n\
+                      : T {#tbl-t}\n\n| a |\n|---|\n| 1 |\n\nSee @fig-b, @eq-y and @tbl-t.\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "href=\"#fig-b\">Figure B</a>");
+        assert_has(&d, "href=\"#eq-y\">Equation II</a>");
+        assert_has(&d, "href=\"#tbl-t\">Table i</a>");
+        assert_has(&d, "<span class=\"caption-label\">Figure B.</span>");
+    }
+
+    #[test]
+    fn subref_labels_number_the_subfigures() {
+        let source = "---\ncrossref:\n  subref-labels: roman i\n---\n\n::: {#fig-g layout-ncol=2}\n![A](a.png){#fig-ga}\n![B](b.png){#fig-gb}\n\nGrid\n:::\n\nSee @fig-gb.\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "<span class=\"caption-label\">(ii)</span> B");
+        assert_has(&d, "href=\"#fig-gb\">Figure 1ii</a>");
+    }
+
+    #[test]
+    fn chapters_prefix_numbers_with_the_chapter() {
+        let source = "---\ncrossref:\n  chapters: true\nnumber-sections: true\n---\n\n\
+                      # One\n\n![A](a.png){#fig-a}\n\n![B](b.png){#fig-b}\n\n\
+                      # Two\n\n![C](c.png){#fig-c}\n\n\
+                      # Extra {.appendix}\n\n![D](d.png){#fig-d}\n\n\
+                      See @fig-a, @fig-b, @fig-c and @fig-d.\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "href=\"#fig-a\">Figure 1.1</a>");
+        assert_has(&d, "href=\"#fig-b\">Figure 1.2</a>");
+        assert_has(&d, "href=\"#fig-c\">Figure 2.1</a>");
+        assert_has(&d, "href=\"#fig-d\">Figure A.1</a>");
+        assert_has(&d, "<span class=\"caption-label\">Figure 2.1.</span>");
+        let off = compose(&source.replace("  chapters: true\n", "  chapters: false\n")).markdown;
+        assert_has(&off, "href=\"#fig-c\">Figure 3</a>");
+        assert_has(&off, "href=\"#fig-d\">Figure 4</a>");
+    }
+
+    #[test]
+    fn numbered_callouts_take_a_label_and_can_be_referred_to() {
+        let source = "::: {#nte-a .callout-note}\nPlain.\n:::\n\n\
+                      ::: {#nte-b .callout-note title=\"Named\"}\nBody.\n:::\n\n\
+                      ::: {#tip-a .callout-tip}\nTip.\n:::\n\nSee @nte-b and @tip-a.\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "<div class=\"callout-title\">Note 1</div>");
+        assert_has(&d, "<div class=\"callout-title\">Note 2. Named</div>");
+        assert_has(&d, "<div class=\"callout-title\">Tip 1</div>");
+        assert_has(&d, "id=\"nte-b\"");
+        assert_has(&d, &format!("See {} and {}.", link("nte-b", "Note 2"), link("tip-a", "Tip 1")));
+        // Without an id a callout stays as it was.
+        let d = compose("::: {.callout-note}\nx\n:::\n").markdown;
+        assert_has(&d, "<div class=\"callout-title\">Note</div>");
+    }
+
+    #[test]
+    fn a_custom_float_is_numbered_like_a_figure() {
+        let source = "---\ncrossref:\n  custom:\n    - kind: float\n      key: vid\n      reference-prefix: Video\n      caption-prefix: Clip\n---\n\n\
+                      ::: {#vid-a}\n<video src=\"a.mp4\"></video>\n\nThe first\n:::\n\n::: {#vid-b}\nx\n\nThe second\n:::\n\nSee @vid-b.\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "<figure class=\"figure custom-float float-vid\" id=\"vid-a\">");
+        assert_has(&d, "<span class=\"caption-label\">Clip 2.</span> The second");
+        assert_has(&d, &format!("See {}.", link("vid-b", "Video 2")));
+        let flow = "---\ncrossref:\n  custom: [{kind: float, key: vid, reference-prefix: Video}]\n---\n\n::: {#vid-a}\nx\n\nCap\n:::\n\nSee @vid-a.\n";
+        let d = compose(flow).markdown;
+        assert_has(&d, "<span class=\"caption-label\">Video 1.</span> Cap");
+        assert_has(&d, &format!("See {}.", link("vid-a", "Video 1")));
+    }
+
+    #[test]
+    fn contents_anchors_follow_the_text_the_draft_gives_comrak() {
+        // A reference in a heading becomes its words; an unresolved one is
+        // bold text. The anchors in the contents match the heading ids.
+        let source = "---\ntoc: true\n---\n\n![A](a.png){#fig-a}\n\n# About @fig-a\n\n# Where is @fig-no\n\n# About Figure 1\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "<a href=\"#about-figure-1\">About Figure 1</a>");
+        assert_has(&d, "<a href=\"#where-is-fig-no\">Where is ?@fig-no</a>");
+        // The third heading has the text of the first: comrak numbers it.
+        assert_has(&d, "<a href=\"#about-figure-1-1\">About Figure 1</a>");
+    }
+
+    #[test]
+    fn setext_headings_are_in_the_contents_and_take_their_number() {
+        let source = "---\ntoc: true\nnumber-sections: true\n---\n\nFirst part\n==========\n\nBody.\n\nSecond part\n-----------\n\nMore.\n\n# Third\n";
+        let d = compose(source).markdown;
+        assert_has(&d, "<a href=\"#first-part\"><span class=\"section-number\">1</span> First part</a>");
+        assert_has(&d, "<a href=\"#second-part\"><span class=\"section-number\">1.1</span> Second part</a>");
+        assert_has(&d, "\n# <span class=\"section-number\" data-number=\"1\"></span>First part\n");
+        assert!(!d.contains("==========") && !d.contains("-----------"), "{d}");
+        // Without numbers a setext heading is left as written.
+        let d = compose("---\ntoc: true\n---\n\nTitle\n=====\n\n# Title\n").markdown;
+        assert_has(&d, "Title\n=====\n");
+        assert_has(&d, "<a href=\"#title\">Title</a>");
+        assert_has(&d, "<a href=\"#title-1\">Title</a>");
     }
 }
