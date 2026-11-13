@@ -362,6 +362,12 @@ pub struct Strings {
     pub include_unavailable: String,
     pub include_cycle: String,
     pub abstract_label: String,
+    pub reuse_label: String,
+    pub copyright_label: String,
+    pub view_license: String,
+    /// `{name}` is the author.
+    pub orcid_label: String,
+    pub corresponding_label: String,
 }
 
 impl Default for Strings {
@@ -371,6 +377,11 @@ impl Default for Strings {
             include_unavailable: "Include {name} is not available".into(),
             include_cycle: "Include cycle at {normalized}".into(),
             abstract_label: "Abstract".into(),
+            reuse_label: "Reuse".into(),
+            copyright_label: "Copyright".into(),
+            view_license: "View License".into(),
+            orcid_label: "ORCID profile for {name}".into(),
+            corresponding_label: "Corresponding author".into(),
         }
     }
 }
@@ -419,6 +430,11 @@ impl Extras {
             );
             read("include_cycle", &mut extras.strings.include_cycle);
             read("abstract", &mut extras.strings.abstract_label);
+            read("reuse", &mut extras.strings.reuse_label);
+            read("copyright", &mut extras.strings.copyright_label);
+            read("view_license", &mut extras.strings.view_license);
+            read("orcid", &mut extras.strings.orcid_label);
+            read("corresponding", &mut extras.strings.corresponding_label);
         }
         extras
     }
@@ -736,6 +752,14 @@ pub fn draft(
             // Pandoc closes a fenced div at the end of the file itself.
         } else if let Some(html) = div_html(div, &lines, &mut ctx, false) {
             out.block(&html, (div.start, last_line));
+        }
+    }
+
+    // The appendix (license, copyright) ends the document (pvfr).
+    if !for_pandoc {
+        let appendix = front_matter::appendix(&ctx);
+        if !appendix.is_empty() {
+            out.block(&appendix, (last_line, last_line));
         }
     }
 

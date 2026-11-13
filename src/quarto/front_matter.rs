@@ -172,6 +172,8 @@ fn is_array_key(key: &str) -> bool {
         k.as_str(),
         "author"
             | "authors"
+            | "affiliations"
+            | "license"
             | "keyword"
             | "keywords"
             | "bibliography"
@@ -437,25 +439,183 @@ fn format_date(text: &str) -> String {
     t.to_string()
 }
 
-/// The names in an `affiliation` value: a string, a map with a `name`, or a
-/// list of those.
-fn affiliation_names(value: &Yaml) -> Vec<String> {
+/// An option of the front matter, at the top level or under `format: html:`.
+fn option<'a>(meta: &'a Map, key: &str) -> Option<&'a Yaml> {
+    get(meta, key).or_else(|| match get(meta, "format") {
+        Some(Yaml::Map(f)) => match get(f, "html") {
+            Some(Yaml::Map(h)) => get(h, key),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+fn option_text(meta: &Map, key: &str) -> String {
+    match option(meta, key) {
+        Some(v @ (Yaml::Str(_) | Yaml::Num(_))) => v.text().trim().to_string(),
+        _ => String::new(),
+    }
+}
+
+/// A link target that cannot run script.
+fn safe_url(url: &str) -> bool {
+    let u = url.trim().to_ascii_lowercase();
+    !u.is_empty()
+        && !["javascript:", "data:", "vbscript:"]
+            .iter()
+            .any(|p| u.starts_with(p))
+}
+
+/// A person's or a license's text: a string, or a map with `literal` or
+/// `given` and `family`.
+fn name_text(value: &Yaml) -> String {
     match value {
-        Yaml::Str(s) if !s.trim().is_empty() => vec![s.trim().to_string()],
-        Yaml::Map(m) => get(m, "name")
+        Yaml::Map(m) => {
+            if let Some(l) = get(m, "literal").filter(|v| v.truthy()) {
+                return l.text().trim().to_string();
+            }
+            ["given", "family"]
+                .into_iter()
+                .filter_map(|k| get(m, k).filter(|v| v.truthy()))
+                .map(|v| v.text().trim().to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+        Yaml::List(_) => String::new(),
+        v => v.text().trim().to_string(),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Affiliation {
+    name: String,
+    url: String,
+}
+
+#[derive(Debug, Default)]
+struct Person {
+    name: String,
+    url: String,
+    email: String,
+    orcid: String,
+    degrees: Vec<String>,
+    corresponding: bool,
+    affiliations: Vec<usize>,
+}
+
+fn affiliation_of(m: &Map) -> Option<Affiliation> {
+    let text = |k: &str| {
+        get(m, k)
             .filter(|v| v.truthy())
-            .map(|v| vec![v.text()])
-            .unwrap_or_default(),
-        Yaml::List(items) => items.iter().flat_map(affiliation_names).collect(),
+            .map(|v| v.text().trim().to_string())
+            .unwrap_or_default()
+    };
+    let (name, department) = (text("name"), text("department"));
+    let name = match (department.is_empty(), name.is_empty()) {
+        (_, true) => department,
+        (true, false) => name,
+        (false, false) => format!("{department}, {name}"),
+    };
+    (!name.is_empty()).then(|| Affiliation {
+        name,
+        url: text("url"),
+    })
+}
+
+/// The affiliations in an `affiliation` or `affiliations` value: a string, a
+/// map with a `name` (and `department`, `url`), a `ref` to an `id` of the
+/// top-level `affiliations`, or a list of those.
+fn affiliations_in(value: &Yaml, known: &[Yaml]) -> Vec<Affiliation> {
+    let by_id = |id: &str| {
+        known.iter().find_map(|k| match k {
+            Yaml::Map(m) if get(m, "id").is_some_and(|v| v.truthy() && v.text().trim() == id) => {
+                affiliation_of(m)
+            }
+            _ => None,
+        })
+    };
+    match value {
+        Yaml::Str(s) if !s.trim().is_empty() => vec![by_id(s.trim()).unwrap_or(Affiliation {
+            name: s.trim().to_string(),
+            url: String::new(),
+        })],
+        Yaml::Map(m) => match get(m, "ref").filter(|v| v.truthy()) {
+            Some(r) => by_id(r.text().trim()).into_iter().collect(),
+            None => affiliation_of(m).into_iter().collect(),
+        },
+        Yaml::List(items) => items.iter().flat_map(|i| affiliations_in(i, known)).collect(),
         _ => Vec::new(),
     }
+}
+
+fn link(url: &str, inner: &str) -> String {
+    if safe_url(url) {
+        format!("<a href=\"{}\">{inner}</a>", escape(url.trim()))
+    } else {
+        inner.to_string()
+    }
+}
+
+const ORCID_ICON: &str = "<svg class=\"orcid-icon\" viewBox=\"0 0 256 256\" width=\"16\" height=\"16\" aria-hidden=\"true\"><circle cx=\"128\" cy=\"128\" r=\"128\" fill=\"#a6ce39\"/><path fill=\"#fff\" d=\"M86.3 186.2H70.9V79.1h15.4v107.1zM108.9 79.1h41.6c39.6 0 57 28.3 57 53.6 0 27.5-21.5 53.6-56.8 53.6h-41.8V79.1zm15.4 93.3h24.5c34.9 0 42.9-26.5 42.9-39.7 0-21.5-13.7-39.7-43.7-39.7h-23.7v79.4zM88.7 56.8c0 5.5-4.5 10.1-10.1 10.1s-10.1-4.6-10.1-10.1c0-5.6 4.5-10.1 10.1-10.1s10.1 4.6 10.1 10.1z\"/></svg>";
+
+fn person_html(p: &Person, strings: &super::Strings) -> String {
+    let mut s = link(&p.url, &escape(&p.name));
+    if !p.degrees.is_empty() {
+        s.push_str(&format!(", {}", escape(&p.degrees.join(", "))));
+    }
+    if !p.affiliations.is_empty() {
+        let refs: Vec<String> = p.affiliations.iter().map(|n| n.to_string()).collect();
+        s.push_str(&format!(
+            "<sup class=\"affiliation-ref\">{}</sup>",
+            refs.join(",")
+        ));
+    }
+    let class = if p.corresponding {
+        "quarto-title-author-email corresponding"
+    } else {
+        "quarto-title-author-email"
+    };
+    let label = escape(&strings.corresponding_label);
+    if !p.email.is_empty() && !p.email.contains(['"', '<', '>', ' ']) {
+        let aria = if p.corresponding {
+            format!(" aria-label=\"{label}\" title=\"{label}\"")
+        } else {
+            String::new()
+        };
+        s.push_str(&format!(
+            " <a href=\"mailto:{}\" class=\"{class}\"{aria}><span class=\"lp-icon lp-icon-envelope\" aria-hidden=\"true\"></span></a>",
+            escape(&p.email)
+        ));
+    } else if p.corresponding {
+        s.push_str(&format!(
+            " <span class=\"{class}\" role=\"img\" aria-label=\"{label}\" title=\"{label}\"><span class=\"lp-icon lp-icon-envelope\" aria-hidden=\"true\"></span></span>"
+        ));
+    }
+    if !p.orcid.is_empty() {
+        let id = p.orcid.trim().trim_start_matches("https://orcid.org/");
+        let aria = strings.orcid_label.replace("{name}", &p.name);
+        s.push_str(&format!(
+            " <a href=\"https://orcid.org/{}\" class=\"quarto-title-author-orcid\" aria-label=\"{}\">{ORCID_ICON}</a>",
+            escape(id),
+            escape(&aria)
+        ));
+    }
+    s
 }
 
 /// The title block of the draft: the HTML that stands for the front matter,
 /// or nothing when it has none of title, subtitle, author, date, abstract or
 /// keywords. The extension point for the title block (fwm8).
 pub(crate) fn title_block(ctx: &Context) -> String {
-    let (meta, abstract_label) = (ctx.meta, ctx.strings.abstract_label.as_str());
+    let meta = ctx.meta;
+    let style = option_text(meta, "title-block-style");
+    if style == "none" {
+        return String::new();
+    }
+    let abstract_label = match option_text(meta, "abstract-title") {
+        t if t.is_empty() => ctx.strings.abstract_label.clone(),
+        t => t,
+    };
     let field = |key: &str| match get(meta, key) {
         None | Some(Yaml::Null) => String::new(),
         Some(v) => v.text().trim().to_string(),
@@ -472,32 +632,68 @@ pub(crate) fn title_block(ctx: &Context) -> String {
     } else {
         Vec::new()
     };
-    // Each author's name and the numbers of their affiliations; the numbers
-    // follow the first appearance of each distinct affiliation.
-    let mut affiliations: Vec<String> = Vec::new();
-    let mut people: Vec<(String, Vec<usize>)> = Vec::new();
+    let known: Vec<Yaml> = match get(meta, "affiliations") {
+        Some(Yaml::List(l)) => l.clone(),
+        Some(m @ Yaml::Map(_)) => vec![m.clone()],
+        _ => Vec::new(),
+    };
+    // Each author and the numbers of their affiliations; the numbers follow
+    // the first appearance of each distinct affiliation.
+    let mut affiliations: Vec<Affiliation> = Vec::new();
+    let mut people: Vec<Person> = Vec::new();
     for a in &list {
-        let (name, names) = match a {
-            Yaml::Str(s) => (s.clone(), Vec::new()),
-            Yaml::Map(m) => (
-                ["name", "literal"]
+        let (mut person, names) = match a {
+            Yaml::Str(s) => (
+                Person {
+                    name: s.clone(),
+                    ..Person::default()
+                },
+                Vec::new(),
+            ),
+            Yaml::Map(m) => {
+                let text = |k: &str| {
+                    get(m, k)
+                        .filter(|v| v.truthy())
+                        .map(|v| v.text().trim().to_string())
+                        .unwrap_or_default()
+                };
+                let name = ["name", "literal"]
                     .into_iter()
                     .filter_map(|k| get(m, k).filter(|v| v.truthy()))
-                    .map(Yaml::text)
-                    .next()
-                    .unwrap_or_default(),
-                ["affiliations", "affiliation"]
+                    .map(name_text)
+                    .find(|n| !n.is_empty())
+                    .unwrap_or_else(|| name_text(&Yaml::Map(m.clone())));
+                let degrees = match get(m, "degrees") {
+                    Some(Yaml::List(l)) => l.iter().map(Yaml::text).collect(),
+                    Some(v) if v.truthy() => vec![v.text()],
+                    _ => Vec::new(),
+                };
+                let person = Person {
+                    name,
+                    url: text("url"),
+                    email: text("email"),
+                    orcid: text("orcid"),
+                    degrees: degrees
+                        .into_iter()
+                        .map(|d| d.trim().to_string())
+                        .filter(|d| !d.is_empty())
+                        .collect(),
+                    corresponding: get(m, "corresponding").is_some_and(Yaml::truthy)
+                        && get(m, "corresponding").map(Yaml::text).as_deref() != Some("false"),
+                    affiliations: Vec::new(),
+                };
+                let names = ["affiliations", "affiliation"]
                     .into_iter()
                     .filter_map(|k| get(m, k))
-                    .flat_map(affiliation_names)
-                    .collect(),
-            ),
-            _ => (String::new(), Vec::new()),
+                    .flat_map(|v| affiliations_in(v, &known))
+                    .collect();
+                (person, names)
+            }
+            _ => (Person::default(), Vec::new()),
         };
-        if name.is_empty() {
+        if person.name.is_empty() {
             continue;
         }
-        let mut numbers = Vec::new();
         for n in names {
             let at = match affiliations.iter().position(|x| *x == n) {
                 Some(at) => at,
@@ -506,15 +702,16 @@ pub(crate) fn title_block(ctx: &Context) -> String {
                     affiliations.len() - 1
                 }
             };
-            if !numbers.contains(&(at + 1)) {
-                numbers.push(at + 1);
+            if !person.affiliations.contains(&(at + 1)) {
+                person.affiliations.push(at + 1);
             }
         }
-        people.push((name, numbers));
+        people.push(person);
     }
     let subtitle = field("subtitle");
     let (title, abstract_text) = (field("title"), field("abstract"));
     let date = format_date(&field("date"));
+    let doi = option_text(meta, "doi");
     let keywords: Vec<String> = match get(meta, "keywords").or_else(|| get(meta, "keyword")) {
         Some(Yaml::List(l)) => l.iter().map(|k| k.text().trim().to_string()).collect(),
         Some(v) if v.truthy() => vec![v.text().trim().to_string()],
@@ -529,11 +726,16 @@ pub(crate) fn title_block(ctx: &Context) -> String {
         && date.is_empty()
         && abstract_text.is_empty()
         && keywords.is_empty()
+        && doi.is_empty()
     {
         return String::new();
     }
-    let mut out =
-        String::from("<header class=\"title-block\" data-librepaper-generated=\"quarto\">");
+    let class = if style == "plain" {
+        "title-block plain"
+    } else {
+        "title-block"
+    };
+    let mut out = format!("<header class=\"{class}\" data-librepaper-generated=\"quarto\">");
     if !title.is_empty() {
         out.push_str(&format!("<h1 class=\"title\">{}</h1>", escape(&title)));
     }
@@ -543,17 +745,7 @@ pub(crate) fn title_block(ctx: &Context) -> String {
     if !people.is_empty() {
         let shown: Vec<String> = people
             .iter()
-            .map(|(name, numbers)| {
-                let mut s = escape(name);
-                if !numbers.is_empty() {
-                    let refs: Vec<String> = numbers.iter().map(|n| n.to_string()).collect();
-                    s.push_str(&format!(
-                        "<sup class=\"affiliation-ref\">{}</sup>",
-                        refs.join(",")
-                    ));
-                }
-                s
-            })
+            .map(|p| person_html(p, ctx.strings))
             .collect();
         out.push_str(&format!("<p class=\"author\">{}</p>", shown.join(", ")));
     }
@@ -565,7 +757,7 @@ pub(crate) fn title_block(ctx: &Context) -> String {
                 format!(
                     "<span class=\"affiliation\"><sup>{}</sup> {}</span>",
                     n + 1,
-                    escape(a)
+                    link(&a.url, &escape(&a.name))
                 )
             })
             .collect();
@@ -577,10 +769,22 @@ pub(crate) fn title_block(ctx: &Context) -> String {
     if !date.is_empty() {
         out.push_str(&format!("<p class=\"date\">{}</p>", escape(&date)));
     }
+    if !doi.is_empty() {
+        let url = if doi.contains("://") {
+            doi.clone()
+        } else {
+            format!("https://doi.org/{}", doi.trim_start_matches("doi:").trim())
+        };
+        out.push_str(&format!(
+            "<p class=\"doi\"><a href=\"{}\">{}</a></p>",
+            escape(&url),
+            escape(&url)
+        ));
+    }
     if !abstract_text.is_empty() {
         out.push_str(&format!(
             "<div class=\"abstract\"><p class=\"abstract-title\">{}</p><p>{}</p></div>",
-            escape(abstract_label),
+            escape(&abstract_label),
             escape(&abstract_text)
         ));
     }
@@ -591,6 +795,136 @@ pub(crate) fn title_block(ctx: &Context) -> String {
         ));
     }
     out.push_str("</header>");
+    out
+}
+
+/// A Creative Commons license named as Quarto reads it ("CC BY-SA 4.0"): its
+/// text and the URL of its deed.
+fn creative_commons(license: &str, lang: &str) -> Option<(String, String)> {
+    let lower = license.trim().to_lowercase();
+    let mut words = lower.split_whitespace();
+    if words.next()? != "cc" {
+        return None;
+    }
+    let kind = words.next()?;
+    if !["by", "by-sa", "by-nd", "by-nc", "by-nc-sa", "by-nc-nd"].contains(&kind) {
+        return None;
+    }
+    let version = words.next().unwrap_or("4.0");
+    let lang = lang.trim().to_lowercase();
+    let deed = if lang.is_empty() || lang == "en" {
+        String::new()
+    } else {
+        format!("deed.{lang}")
+    };
+    Some((
+        format!("CC {} {version}", kind.to_uppercase()),
+        format!("https://creativecommons.org/licenses/{kind}/{version}/{deed}"),
+    ))
+}
+
+/// The "Reuse" and "Copyright" sections that end a document, as Quarto's
+/// appendix writes them; nothing when the front matter has neither.
+pub(crate) fn appendix(ctx: &Context) -> String {
+    let meta = ctx.meta;
+    let lang = option_text(meta, "lang");
+    let section = |id: &str, title: String, body: String| {
+        format!(
+            "<section id=\"quarto-{id}\" class=\"quarto-appendix-section\"><h2 class=\"anchored quarto-appendix-heading\">{}</h2><div class=\"quarto-appendix-contents\">{body}</div></section>",
+            escape(&title)
+        )
+    };
+    let title = |key: &str, default: &str| match option_text(meta, key) {
+        t if t.is_empty() => default.to_string(),
+        t => t,
+    };
+    let licenses: Vec<&Yaml> = match option(meta, "license") {
+        Some(Yaml::List(l)) => l.iter().collect(),
+        Some(v) if v.truthy() => vec![v],
+        _ => Vec::new(),
+    };
+    let mut body = String::new();
+    for license in licenses {
+        let view = escape(&ctx.strings.view_license);
+        let html = match license {
+            Yaml::Str(s) if !s.trim().is_empty() => match creative_commons(s, &lang) {
+                Some((text, url)) => {
+                    format!("<a rel=\"license\" href=\"{}\">{}</a>", escape(&url), escape(&text))
+                }
+                None => escape(s.trim()),
+            },
+            Yaml::Map(m) => {
+                let text = |k: &str| {
+                    get(m, k)
+                        .filter(|v| v.truthy())
+                        .map(|v| v.text().trim().to_string())
+                        .unwrap_or_default()
+                };
+                let url = [text("link"), text("url")]
+                    .into_iter()
+                    .find(|u| safe_url(u))
+                    .unwrap_or_default();
+                let mut html = escape(&text("text"));
+                if !url.is_empty() {
+                    if !html.is_empty() {
+                        html.push(' ');
+                    }
+                    html.push_str(&format!(
+                        "<a rel=\"license\" href=\"{}\">({view})</a>",
+                        escape(&url)
+                    ));
+                }
+                html
+            }
+            _ => String::new(),
+        };
+        if !html.is_empty() {
+            body.push_str(&format!("<div class=\"license\">{html}</div>"));
+        }
+    }
+    let mut out = String::new();
+    if !body.is_empty() {
+        out.push_str(&section(
+            "reuse",
+            title("section-title-reuse", &ctx.strings.reuse_label),
+            body,
+        ));
+    }
+    let copyright = match option(meta, "copyright") {
+        Some(Yaml::Map(m)) => {
+            let text = |k: &str| {
+                get(m, k)
+                    .filter(|v| v.truthy())
+                    .map(|v| v.text().trim().to_string())
+                    .unwrap_or_default()
+            };
+            let statement = text("statement");
+            if statement.is_empty() {
+                let (year, holder) = (text("year"), text("holder"));
+                let parts = [year, holder]
+                    .into_iter()
+                    .filter(|p| !p.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if parts.is_empty() {
+                    parts
+                } else {
+                    format!("\u{a9} {parts}")
+                }
+            } else {
+                statement
+            }
+        }
+        Some(v @ Yaml::Str(_)) => v.text().trim().to_string(),
+        _ => String::new(),
+    };
+    if !copyright.is_empty() {
+        out.push_str(&section(
+            "copyright",
+            title("section-title-copyright", &ctx.strings.copyright_label),
+            format!("<div>{}</div>", escape(&copyright)),
+        ));
+    }
     out
 }
 
@@ -786,6 +1120,100 @@ mod tests {
         // Without affiliations there are no numbers and no list.
         let d = compose("---\ntitle: T\nauthor: Ada\n---\n").markdown;
         assert!(!d.contains("<sup") && !d.contains("affiliations"), "{d}");
+    }
+
+    #[test]
+    fn authors_carry_links_degrees_email_and_orcid() {
+        let source = "---\ntitle: T\nauthor:\n  - name: Ada Lovelace\n    url: https://ada.example\n    email: ada@x.org\n    orcid: 0000-0001-2345-6789\n    degrees:\n      - PhD\n      - MSc\n    corresponding: true\n  - name:\n      given: Grace\n      family: Hopper\n    email: grace@x.org\n  - Plain Person\n---\n";
+        let d = compose(source).markdown;
+        assert!(d.contains("<a href=\"https://ada.example\">Ada Lovelace</a>, PhD, MSc"), "{d}");
+        assert!(d.contains(
+            "<a href=\"mailto:ada@x.org\" class=\"quarto-title-author-email corresponding\" aria-label=\"Corresponding author\""
+        ), "{d}");
+        assert!(d.contains(
+            "<a href=\"https://orcid.org/0000-0001-2345-6789\" class=\"quarto-title-author-orcid\" aria-label=\"ORCID profile for Ada Lovelace\"><svg"
+        ), "{d}");
+        assert!(d.contains("Grace Hopper <a href=\"mailto:grace@x.org\" class=\"quarto-title-author-email\">"), "{d}");
+        assert!(d.contains(", Plain Person</p>"), "{d}");
+        // A list of plain strings keeps them in order.
+        let d = compose("---\nauthor: [Ada, Grace]\n---\n").markdown;
+        assert!(d.contains("<p class=\"author\">Ada, Grace</p>"), "{d}");
+    }
+
+    #[test]
+    fn affiliations_are_inline_or_by_reference() {
+        let source = "---\nauthor:\n  - name: Ada\n    affiliations:\n      - name: Engine Lab\n        department: Maths\n        url: https://lab.example\n  - name: Grace\n    affiliations:\n      - ref: navy\n  - name: Alan\n    affiliations: navy\naffiliations:\n  - id: navy\n    name: Navy\n---\n";
+        let d = compose(source).markdown;
+        assert!(d.contains("Ada<sup class=\"affiliation-ref\">1</sup>"), "{d}");
+        assert!(d.contains("Grace<sup class=\"affiliation-ref\">2</sup>"), "{d}");
+        assert!(d.contains("Alan<sup class=\"affiliation-ref\">2</sup>"), "{d}");
+        assert!(d.contains(
+            "<span class=\"affiliation\"><sup>1</sup> <a href=\"https://lab.example\">Maths, Engine Lab</a></span> <span class=\"affiliation\"><sup>2</sup> Navy</span>"
+        ), "{d}");
+    }
+
+    #[test]
+    fn a_doi_is_a_link() {
+        let d = compose("---\ntitle: T\ndoi: 10.1000/xyz\n---\n").markdown;
+        assert!(d.contains(
+            "<p class=\"doi\"><a href=\"https://doi.org/10.1000/xyz\">https://doi.org/10.1000/xyz</a></p>"
+        ), "{d}");
+    }
+
+    #[test]
+    fn licenses_link_to_creative_commons() {
+        let d = compose("---\nlicense: CC BY\n---\n\nBody\n").markdown;
+        assert!(d.contains("<h2 class=\"anchored quarto-appendix-heading\">Reuse</h2>"), "{d}");
+        assert!(d.contains(
+            "<a rel=\"license\" href=\"https://creativecommons.org/licenses/by/4.0/\">CC BY 4.0</a>"
+        ), "{d}");
+        assert!(d.rfind("quarto-reuse") > d.rfind("Body"), "{d}");
+        let d = compose("---\nlicense: CC BY-NC-ND 3.0\n---\n").markdown;
+        assert!(d.contains("href=\"https://creativecommons.org/licenses/by-nc-nd/3.0/\">CC BY-NC-ND 3.0</a>"), "{d}");
+        let d = compose("---\nlicense: cc by-sa\n---\n").markdown;
+        assert!(d.contains("licenses/by-sa/4.0/\">CC BY-SA 4.0</a>"), "{d}");
+        let d = compose("---\nlang: fr\nlicense: CC BY\n---\n").markdown;
+        assert!(d.contains("licenses/by/4.0/deed.fr\""), "{d}");
+        // Other text is shown as written; a map keeps its text and link.
+        let d = compose("---\nlicense: All rights reserved\n---\n").markdown;
+        assert!(d.contains("<div class=\"license\">All rights reserved</div>"), "{d}");
+        let d = compose("---\nlicense:\n  type: open\n  text: My terms\n  link: https://terms.example\n---\n").markdown;
+        assert!(d.contains(
+            "My terms <a rel=\"license\" href=\"https://terms.example\">(View License)</a>"
+        ), "{d}");
+        let d = compose("---\nlicense:\n  - CC BY\n  - CC BY-SA\n---\n").markdown;
+        assert!(d.contains("by/4.0/") && d.contains("by-sa/4.0/"), "{d}");
+    }
+
+    #[test]
+    fn copyright_ends_the_document_in_an_appendix() {
+        let d = compose("---\ncopyright: Ada 2026\n---\n\nBody\n").markdown;
+        assert!(d.contains("<h2 class=\"anchored quarto-appendix-heading\">Copyright</h2>"), "{d}");
+        assert!(d.contains("<div>Ada 2026</div>"), "{d}");
+        assert!(d.rfind("quarto-copyright") > d.rfind("Body"), "{d}");
+        let d = compose("---\ncopyright:\n  holder: Ada\n  year: 2026\n---\n").markdown;
+        assert!(d.contains("<div>\u{a9} 2026 Ada</div>"), "{d}");
+        let d = compose("---\ncopyright:\n  statement: All mine\n---\n").markdown;
+        assert!(d.contains("<div>All mine</div>"), "{d}");
+        // The draft for Pandoc has no appendix.
+        let pandoc = crate::quarto::draft(
+            "---\ncopyright: Ada\n---\n",
+            "main.qmd",
+            &|_| None,
+            &crate::quarto::Extras::default(),
+            true,
+        );
+        assert!(!pandoc.markdown.contains("quarto-copyright"));
+    }
+
+    #[test]
+    fn title_block_style_and_abstract_title() {
+        let d = compose("---\ntitle: T\ntitle-block-style: none\n---\n").markdown;
+        assert!(!d.contains("title-block"), "{d}");
+        let d = compose("---\ntitle: T\ntitle-block-style: plain\n---\n").markdown;
+        assert!(d.contains("<header class=\"title-block plain\""), "{d}");
+        let d = compose("---\ntitle: T\nabstract: A\nabstract-title: Summary\n---\n").markdown;
+        assert!(d.contains("<p class=\"abstract-title\">Summary</p>"), "{d}");
     }
 
     #[test]
