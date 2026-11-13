@@ -323,13 +323,20 @@ pub(crate) fn display(
     let Some((output, html)) = html else {
         return;
     };
-    // `class-output` and `attr-output` land on the container.
+    // `class-output` and `attr-output` land on the container, with the
+    // `column`, `layout-align` and `layout-valign` classes.
+    let mut layout: Vec<String> = opt("column")
+        .and_then(|v| super::layout::column_class_of(&v.text()))
+        .into_iter()
+        .collect();
+    layout.extend(super::layout::align_classes(&cell.options));
+    let layout: String = layout.iter().map(|c| format!(" {c}")).collect();
     let extra = option_attributes(cell, "output", &[]);
     let with_classes = |base: &str| {
         if extra.contains("class=\"") {
-            extra.replacen("class=\"", &format!("class=\"{base} "), 1)
+            extra.replacen("class=\"", &format!("class=\"{base}{layout} "), 1)
         } else {
-            format!(" class=\"{base}\"{extra}")
+            format!(" class=\"{base}{layout}\"{extra}")
         }
     };
     let block = if output.stale {

@@ -44,10 +44,12 @@
 
 mod attrs;
 mod cells;
+mod conditional;
 mod definitions;
 mod divs;
 mod front_matter;
 mod includes;
+mod layout;
 mod outputs;
 mod refs;
 mod shortcodes;
@@ -565,6 +567,10 @@ pub fn draft(
     // Block-level includes are spliced in first, so everything below sees one
     // document; `expanded.origin` says where each line really is.
     let mut expanded = includes::expand(&main_lines, path, files, &extras.strings);
+    // Conditional content is resolved before anything is moved or numbered.
+    if let Some(visible) = conditional::resolve(&expanded.lines, for_pandoc) {
+        expanded.lines = visible;
+    }
     shortcodes::move_contents(&mut expanded);
     definitions::rewrite(&mut expanded);
     let lines: Vec<&str> = expanded.lines.iter().map(String::as_str).collect();
