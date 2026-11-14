@@ -645,7 +645,7 @@ mod tests {
 
     fn html(source: &str) -> String {
         let d = compose(source);
-        comrak::markdown_to_html(&d.markdown, &crate::markdown::quarto_options())
+        crate::markdown::to_html(&d.markdown, &crate::markdown::quarto_options())
     }
 
     #[test]

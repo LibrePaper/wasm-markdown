@@ -5,8 +5,12 @@
 //! bytes actually served. The reader anchors comments into those bytes, so they
 //! must not change underneath a comment.
 
+use std::fmt::Write;
+
+use comrak::html::Context;
+use comrak::nodes::{AstNode, NodeTaskItem, NodeValue};
 use comrak::options::{Extension, Parse, Render};
-use comrak::Options;
+use comrak::{Arena, Options};
 
 use crate::page;
 
@@ -78,7 +82,139 @@ pub fn title_of(source: &str) -> String {
 
 /// Renders a markdown source to body HTML, with no page around it.
 pub fn render_body(source: &str) -> String {
-    comrak::markdown_to_html(source, &options())
+    to_html(source, &options())
+}
+
+/// Comrak only knows the boxes `[ ]`, `[x]` and `[X]`. The in-progress and
+/// cancelled marks `[/]` and `[-]` are read here, once the tree is parsed, and
+/// turned into task items. Only an item that looks like a task qualifies: a
+/// list item whose first paragraph opens with the box, followed by a space or
+/// the end of the line, so `[/]no space` stays literal text.
+pub(crate) fn promote_tasks<'a>(root: &'a AstNode<'a>) {
+    // Collect first: the edits below touch the same nodes the walk visits.
+    let items: Vec<&'a AstNode<'a>> = root
+        .descendants()
+        .filter(|n| matches!(n.data().value, NodeValue::Item(_)))
+        .collect();
+    for item in items {
+        let Some(parent) = item.parent() else {
+            continue;
+        };
+        if !matches!(parent.data().value, NodeValue::List(_)) {
+            continue;
+        }
+        let Some(paragraph) = item.first_child() else {
+            continue;
+        };
+        if !matches!(paragraph.data().value, NodeValue::Paragraph) {
+            continue;
+        }
+        let Some(first) = paragraph.first_child() else {
+            continue;
+        };
+        let text = match &first.data().value {
+            NodeValue::Text(text) => text.to_string(),
+            _ => continue,
+        };
+        let symbol = match text.get(..3) {
+            Some("[/]") => '/',
+            Some("[-]") => '-',
+            _ => continue,
+        };
+        let rest = &text[3..];
+        let spaced = matches!(rest.as_bytes().first(), Some(b' ' | b'\t'));
+        let at_line_end = match first.next_sibling() {
+            None => true,
+            Some(next) => matches!(
+                next.data().value,
+                NodeValue::SoftBreak | NodeValue::LineBreak
+            ),
+        };
+        if !(spaced || (rest.is_empty() && at_line_end)) {
+            continue;
+        }
+        let rest = rest.trim_start_matches([' ', '\t']).to_string();
+        if let NodeValue::Text(ref mut text) = first.data_mut().value {
+            *text = rest.into();
+        }
+        let sourcepos = item.data().sourcepos;
+        item.data_mut().value = NodeValue::TaskItem(NodeTaskItem {
+            symbol: Some(symbol),
+            symbol_sourcepos: sourcepos,
+        });
+        if let NodeValue::List(ref mut list) = parent.data_mut().value {
+            list.is_task_list = true;
+        }
+    }
+}
+
+// Renders a task item as a checkbox inside its `<li>`, with a class for its
+// state. Comrak's own rendering writes the checkbox and no state, so this
+// replaces it for every item; the state class is what a stylesheet shows.
+comrak::create_formatter!(TaskFormatter, {
+    NodeValue::TaskItem(ref nti) => |context, node, entering| {
+        task_item(context, node, entering, nti)?;
+    },
+});
+
+fn task_item(
+    context: &mut Context<()>,
+    node: &AstNode,
+    entering: bool,
+    nti: &NodeTaskItem,
+) -> std::fmt::Result {
+    let write_li = node
+        .parent()
+        .is_some_and(|p| matches!(p.data().value, NodeValue::List(_)));
+    if entering {
+        context.cr()?;
+        if write_li {
+            context.write_str("<li class=\"task task-")?;
+            context.write_str(task_state(nti.symbol))?;
+            context.write_str("\">")?;
+        }
+        context.write_str("<input type=\"checkbox\"")?;
+        if task_state(nti.symbol) == "done" {
+            context.write_str(" checked=\"\"")?;
+        }
+        context.write_str(" disabled=\"\" /> ")?;
+    } else if write_li {
+        context.write_str("</li>")?;
+        context.lf()?;
+    }
+    Ok(())
+}
+
+/// The state a box names: `[ ]` is to do, `[/]` is under way, `[-]` is given
+/// up on, and `[x]` (or anything else comrak took as a box) is done.
+fn task_state(symbol: Option<char>) -> &'static str {
+    match symbol {
+        None => "todo",
+        Some('/') => "doing",
+        Some('-') => "cancelled",
+        Some(_) => "done",
+    }
+}
+
+/// Formats a parsed tree as HTML, with task items as this module writes them.
+pub fn format_html<'a>(
+    root: &'a AstNode<'a>,
+    options: &Options,
+    out: &mut String,
+) -> std::fmt::Result {
+    TaskFormatter::format_document(root, options, out)
+}
+
+/// Renders a markdown source to body HTML through the task-aware path: parse,
+/// promote the `[/]` and `[-]` items, then format.
+pub fn to_html(source: &str, options: &Options) -> String {
+    let arena = Arena::new();
+    let root = comrak::parse_document(&arena, source, options);
+    promote_tasks(root);
+    let mut html = String::new();
+    // Writing to a String cannot fail.
+    let _ = format_html(root, options, &mut html);
+    html
 }
 
 /// Where an image in the document actually lives. A markdown document names
@@ -112,10 +248,7 @@ pub fn render_with(source: &str, title: &str, assets: Resolve) -> String {
 
 /// The same for a Quarto draft, with the Quarto options.
 fn render_quarto_with(source: &str, title: &str, assets: Resolve) -> String {
-    let body = rewrite_images(
-        &colwidths(&comrak::markdown_to_html(source, &quarto_options())),
-        assets,
-    );
+    let body = rewrite_images(&colwidths(&to_html(source, &quarto_options())), assets);
     page::page(title, "", &body)
 }
 
@@ -352,7 +485,7 @@ mod tests {
 
     #[test]
     fn quarto_options_enable_the_pandoc_extras() {
-        let html = comrak::markdown_to_html(
+        let html = to_html(
             "H~2~O, x^2^, ~~struck~~ and a note^[inline].\n\nTerm\n: Meaning\n",
             &quarto_options(),
         );
@@ -370,7 +503,7 @@ mod tests {
 
     fn quarto_html(source: &str) -> String {
         let draft = crate::quarto::tests::compose(source).markdown;
-        colwidths(&comrak::markdown_to_html(&draft, &quarto_options()))
+        colwidths(&to_html(&draft, &quarto_options()))
     }
 
     const LONG_TABLE: &str = "| a | b |\n|---|---------|\n| 1 | this cell is long enough to push the whole row past the limit of seventy-two |\n";
@@ -502,5 +635,74 @@ mod tests {
     #[test]
     fn raw_html_is_kept() {
         assert!(render_body("<div class=\"x\">hi</div>\n").contains("<div class=\"x\">"));
+    }
+
+    #[test]
+    fn each_task_state_has_its_class_and_checkbox() {
+        let html = render_body(
+            "- [ ] todo\n- [/] doing\n- [x] done\n- [X] also done\n- [-] cancelled\n- [?] other\n",
+        );
+        for wanted in [
+            "<li class=\"task task-todo\"><input type=\"checkbox\" disabled=\"\" /> todo</li>",
+            "<li class=\"task task-doing\"><input type=\"checkbox\" disabled=\"\" /> doing</li>",
+            "<li class=\"task task-done\"><input type=\"checkbox\" checked=\"\" disabled=\"\" /> done</li>",
+            "<li class=\"task task-done\"><input type=\"checkbox\" checked=\"\" disabled=\"\" /> also done</li>",
+            "<li class=\"task task-cancelled\"><input type=\"checkbox\" disabled=\"\" /> cancelled</li>",
+            "<li>[?] other</li>",
+        ] {
+            assert!(html.contains(wanted), "{wanted} missing in {html}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_box_stays_a_plain_item() {
+        let html = render_body("- [?] not a box\n");
+        assert!(html.contains("<li>[?] not a box</li>"), "{html}");
+        assert!(!html.contains("task"), "{html}");
+    }
+
+    #[test]
+    fn a_link_after_a_box_lookalike_is_still_a_link() {
+        let html = render_body("- [a](http://x.y) link\n");
+        assert!(html.contains("<a href=\"http://x.y\">a</a> link"), "{html}");
+        assert!(!html.contains("task"), "{html}");
+    }
+
+    #[test]
+    fn nested_task_items_keep_their_states() {
+        let html = render_body("- [/] parent\n  - [-] child\n");
+        assert!(html.contains("task-doing"), "{html}");
+        assert!(html.contains("task-cancelled"), "{html}");
+    }
+
+    #[test]
+    fn an_ordered_list_takes_task_items_too() {
+        let html = render_body("1. [/] one\n");
+        assert!(html.contains("<li class=\"task task-doing\">"), "{html}");
+    }
+
+    #[test]
+    fn a_loose_task_list_keeps_its_paragraphs() {
+        let html = render_body("- [/] one\n\n- [-] two\n");
+        assert!(
+            html.contains(
+                "<li class=\"task task-doing\"><input type=\"checkbox\" disabled=\"\" /> "
+            ),
+            "{html}"
+        );
+        assert!(html.contains("<p>one</p>"), "{html}");
+    }
+
+    #[test]
+    fn a_box_alone_on_its_line_is_a_task() {
+        let html = render_body("- [/]\n");
+        assert!(html.contains("task-doing"), "{html}");
+    }
+
+    #[test]
+    fn a_box_without_a_space_after_it_is_literal_text() {
+        let html = render_body("- [/]no space\n");
+        assert!(html.contains("[/]no space"), "{html}");
+        assert!(!html.contains("task-doing"), "{html}");
     }
 }

@@ -16,7 +16,9 @@ CommonMark plus the GitHub extensions — tables, strikethrough, task lists,
 autolinks, footnotes — with smart quotes and dashes, and stable heading ids so
 links can point into a document. Raw HTML in the source is kept: a rendered
 document is served on its own origin and framed, so the author's HTML is no
-more dangerous than the markdown around it.
+more dangerous than the markdown around it. Task items carry `task` plus a state
+class on the `<li>`: `task-todo` for `[ ]`, `task-doing` for `[/]`, `task-done`
+for `[x]` or `[X]`, and `task-cancelled` for `[-]`.
 
 Math between dollars — `$x^*$` in a sentence, `$$…$$` on its own lines — is
 kept as TeX, escaped inside a span tagged `data-math-style="inline"` or

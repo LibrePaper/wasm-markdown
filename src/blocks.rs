@@ -20,7 +20,7 @@
 //! matter and a cell's output into the cell.
 
 use comrak::nodes::{AstNode, NodeHtmlBlock, NodeValue};
-use comrak::{format_html, parse_document, Arena};
+use comrak::{parse_document, Arena};
 
 use crate::diagnostic::Diagnostic;
 use crate::markdown::{self, Files, Resolve};
@@ -44,6 +44,7 @@ struct Rendered {
 fn render_draft(markdown: &str, options: &comrak::Options) -> Vec<Rendered> {
     let arena = Arena::new();
     let root = parse_document(&arena, markdown, options);
+    markdown::promote_tasks(root);
     let children: Vec<&AstNode> = root.children().collect();
     // The parser moves footnote definitions to the end, and the renderer
     // wraps them in one section. Everything from the first one on is cut.
@@ -66,7 +67,7 @@ fn render_draft(markdown: &str, options: &comrak::Options) -> Vec<Rendered> {
         None => root.append(end),
     }
     let mut html = String::new();
-    let _ = format_html(root, options, &mut html);
+    let _ = markdown::format_html(root, options, &mut html);
 
     let mut cuts: Vec<(usize, usize)> = Vec::new();
     let mut at = 0;
@@ -231,6 +232,13 @@ mod tests {
         assert!(blocks[3].html.starts_with("<table>"));
         assert!(blocks[4].html.starts_with("<pre"));
         assert!(!blocks.iter().any(|b| b.html.contains("data-sourcepos")));
+    }
+
+    #[test]
+    fn a_task_list_block_carries_its_state_class() {
+        let blocks = run("- [/] doing\n", "paper.md", &no_files);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].html.contains("task-doing"), "{}", blocks[0].html);
     }
 
     #[test]
