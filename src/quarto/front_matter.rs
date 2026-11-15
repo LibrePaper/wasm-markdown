@@ -216,9 +216,137 @@ fn item_slot<'a>(top: &'a mut Map, list: &str, at: usize, key: &str) -> Option<&
     m.iter_mut().find(|(k, _)| k == key).map(|(_, v)| v)
 }
 
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// A block scalar header: `|` (literal) or `>` (folded), then a chomping
+/// indicator `-` or `+` and an indentation digit 1-9, in either order.
+fn block_header(value: &str) -> Option<(char, Option<char>, Option<usize>)> {
+    let t = without_comment(value).trim();
+    let mut chars = t.chars();
+    let style = chars.next().filter(|c| *c == '|' || *c == '>')?;
+    let (mut chomp, mut digit) = (None, None);
+    for c in chars {
+        match c {
+            '-' | '+' if chomp.is_none() => chomp = Some(c),
+            '1'..='9' if digit.is_none() => digit = Some(c as usize - '0' as usize),
+            _ => return None,
+        }
+    }
+    Some((style, chomp, digit))
+}
+
+/// Folds content lines the way YAML does for `>`: a line break between two
+/// text lines becomes a space, a run of blank lines becomes newlines, and a
+/// more-indented line keeps its breaks.
+fn fold(lines: &[&str]) -> String {
+    let mut out = String::new();
+    let mut prev: Option<&str> = None;
+    let mut blanks = 0;
+    for line in lines {
+        if line.is_empty() {
+            blanks += 1;
+            continue;
+        }
+        match prev {
+            None => out.push_str(&"\n".repeat(blanks)),
+            Some(p) if p.starts_with([' ', '\t']) || line.starts_with([' ', '\t']) => {
+                out.push_str(&"\n".repeat(blanks + 1));
+            }
+            Some(_) if blanks == 0 => out.push(' '),
+            Some(_) => out.push_str(&"\n".repeat(blanks)),
+        }
+        out.push_str(line);
+        prev = Some(line);
+        blanks = 0;
+    }
+    out
+}
+
+/// The block scalar that `header` opens, read from `lines[start..end]`: the
+/// blank lines and the lines indented more than `key_indent` that follow it.
+/// Returns the text and the index of the first line it did not take, or
+/// `None` when `header` is not a block header.
+fn block_scalar(
+    header: &str,
+    key_indent: usize,
+    lines: &[&str],
+    start: usize,
+    end: usize,
+) -> Option<(String, usize)> {
+    let (style, chomp, digit) = block_header(header)?;
+    let mut next = start;
+    while next < end {
+        let line = lines[next];
+        if !line.trim().is_empty() && indent_of(line) <= key_indent {
+            break;
+        }
+        next += 1;
+    }
+    let body = &lines[start..next];
+    let content = match digit {
+        Some(d) => key_indent + d,
+        None => body
+            .iter()
+            .copied()
+            .find(|l| !l.trim().is_empty())
+            .map_or(key_indent + 1, indent_of),
+    };
+    let stripped: Vec<&str> = body
+        .iter()
+        .map(|&l| {
+            if l.trim().is_empty() {
+                ""
+            } else {
+                &l[content.min(indent_of(l))..]
+            }
+        })
+        .collect();
+    let last = stripped
+        .iter()
+        .rposition(|l| !l.is_empty())
+        .map_or(0, |p| p + 1);
+    let (lines_of_text, trailing) = (&stripped[..last], stripped.len() - last);
+    let has_text = !lines_of_text.is_empty();
+    let mut text = if style == '|' {
+        lines_of_text.join("\n")
+    } else {
+        fold(lines_of_text)
+    };
+    let newlines = match chomp {
+        Some('-') => 0,
+        Some('+') if has_text => 1 + trailing,
+        Some('+') => trailing,
+        _ => usize::from(has_text),
+    };
+    text.push_str(&"\n".repeat(newlines));
+    Some((text, next))
+}
+
+/// The block scalar that line `i` opens, if its value is a block header: the
+/// rest of a key line, the text after `key:` in a list item's map, or the rest
+/// of a plain list item. Returns the value and the next line to read.
+fn line_block(lines: &[&str], i: usize, end: usize) -> Option<(Yaml, usize)> {
+    let line = lines[i];
+    let (indent, text) = if let Some((indent, rest)) = list_item(line) {
+        match rest.find(':') {
+            Some(c) if c > 0 && !rest.starts_with(['"', '\'']) => (indent, &rest[c + 1..]),
+            _ => (indent, rest),
+        }
+    } else {
+        let (indent, _, rest) = key_line(line)?;
+        (indent, rest)
+    };
+    let (text, next) = block_scalar(text, indent, lines, i + 1, end)?;
+    Some((Yaml::Str(text), next))
+}
+
 /// The small YAML reader for front matter: top-level scalars, one level of
-/// nesting (two under a key whose child opens a map, as `format:`), and lists for the keys that take them. Unknown shapes are warned
-/// about; the source itself is never rewritten.
+/// nesting (two under a key whose child opens a map, as `format:`), lists for
+/// the keys that take them, and block scalars (`|` and `>`, as a long
+/// abstract is written). Unknown shapes are warned about; the source itself is
+/// never rewritten.
 pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
     let none = |diagnostics: Vec<Diagnostic>| FrontMatter {
         meta: Vec::new(),
@@ -249,10 +377,19 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
     // A key of the top-level map that opened a map of its own (`format:`'s
     // `html:`): its name and its indent.
     let mut sub: Option<(String, usize)> = None;
+    // The lines of a block scalar were read with its header; the loop skips them.
+    let mut skip_until = 0;
     for (i, line) in lines.iter().enumerate().take(close).skip(1) {
-        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+        if i < skip_until || line.trim().is_empty() || line.trim_start().starts_with('#') {
             continue;
         }
+        let mut block_value = None;
+        if let Some((value, next)) = line_block(lines, i, close) {
+            block_value = Some(value);
+            skip_until = next;
+        }
+        // The value a scalar on this line takes: its block scalar, else the one-line reading.
+        let mut value_of = |text: &str| block_value.take().unwrap_or_else(|| scalar(text));
         if let (Some((indent, rest)), Some(ak), Some((list, at)), Some((nkey, nindent))) = (
             list_item(line),
             array_key.clone(),
@@ -268,10 +405,10 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
                         let entry = match rest.find(':') {
                             Some(c) if c > 0 && !rest.starts_with(['"', '\'']) => {
                                 let mut m = Map::new();
-                                set(&mut m, rest[..c].trim(), scalar(&rest[c + 1..]));
+                                set(&mut m, rest[..c].trim(), value_of(&rest[c + 1..]));
                                 Yaml::Map(m)
                             }
-                            _ => scalar(rest),
+                            _ => value_of(rest),
                         };
                         entries.push(entry);
                     }
@@ -289,7 +426,7 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
             let entry = match item.find(':') {
                 Some(at) if at > 0 => {
                     let mut m = Map::new();
-                    set(&mut m, item[..at].trim(), scalar(&item[at + 1..]));
+                    set(&mut m, item[..at].trim(), value_of(&item[at + 1..]));
                     Some(Yaml::Map(m))
                 }
                 _ => None,
@@ -297,7 +434,7 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
             if let Some(Yaml::List(items)) = top.iter_mut().find(|(k, _)| *k == ak).map(|(_, v)| v)
             {
                 array_item = entry.as_ref().map(|_| (ak.clone(), items.len()));
-                items.push(entry.unwrap_or_else(|| scalar(item)));
+                items.push(entry.unwrap_or_else(|| value_of(item)));
             }
             array_indent = indent as isize;
             continue;
@@ -318,7 +455,7 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
             nested = None;
             sub = None;
             let value = if !rest.is_empty() {
-                scalar(rest)
+                value_of(rest)
             } else if array_key.is_some() {
                 Yaml::List(Vec::new())
             } else {
@@ -334,10 +471,10 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
                     match slot {
                         Yaml::List(entries) => {
                             if let Some(Yaml::Map(m)) = entries.last_mut() {
-                                set(m, key, scalar(rest));
+                                set(m, key, value_of(rest));
                             }
                         }
-                        Yaml::Map(m) => set(m, key, scalar(rest)),
+                        Yaml::Map(m) => set(m, key, value_of(rest)),
                         _ => {}
                     }
                 }
@@ -349,7 +486,7 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
                         set(m, key, Yaml::Map(Map::new()));
                         nested = Some((key.to_string(), indent));
                     } else {
-                        set(m, key, scalar(rest));
+                        set(m, key, value_of(rest));
                         nested = None;
                     }
                 }
@@ -372,13 +509,13 @@ pub fn parse_front_matter(lines: &[&str]) -> FrontMatter {
                 if let Some(Yaml::Map(inner)) =
                     m.iter_mut().find(|(k, _)| *k == skey).map(|(_, v)| v)
                 {
-                    set(inner, key, scalar(rest));
+                    set(inner, key, value_of(rest));
                 }
             } else if rest.is_empty() {
                 set(m, key, Yaml::Map(Map::new()));
                 sub = Some((key.to_string(), indent));
             } else {
-                set(m, key, scalar(rest));
+                set(m, key, value_of(rest));
                 sub = None;
             }
         } else {
@@ -783,10 +920,13 @@ pub(crate) fn title_block(ctx: &Context) -> String {
     }
     if !abstract_text.is_empty() {
         out.push_str(&format!(
-            "<div class=\"abstract\"><p class=\"abstract-title\">{}</p><p>{}</p></div>",
-            escape(&abstract_label),
-            escape(&abstract_text)
+            "<div class=\"abstract\"><p class=\"abstract-title\">{}</p>",
+            escape(&abstract_label)
         ));
+        for paragraph in abstract_paragraphs(&abstract_text) {
+            out.push_str(&format!("<p>{}</p>", escape(&paragraph)));
+        }
+        out.push_str("</div>");
     }
     if !keywords.is_empty() {
         out.push_str(&format!(
@@ -796,6 +936,27 @@ pub(crate) fn title_block(ctx: &Context) -> String {
     }
     out.push_str("</header>");
     out
+}
+
+/// An abstract's paragraphs: its lines, split where a line is blank. The
+/// lines of a paragraph keep their breaks; the HTML collapses them.
+fn abstract_paragraphs(text: &str) -> Vec<String> {
+    let mut paragraphs = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(current.join("\n"));
+                current.clear();
+            }
+        } else {
+            current.push(line);
+        }
+    }
+    if !current.is_empty() {
+        paragraphs.push(current.join("\n"));
+    }
+    paragraphs
 }
 
 /// A Creative Commons license named as Quarto reads it ("CC BY-SA 4.0"): its
@@ -1255,6 +1416,155 @@ mod tests {
         assert!(d.contains("<header class=\"title-block plain\""), "{d}");
         let d = compose("---\ntitle: T\nabstract: A\nabstract-title: Summary\n---\n").markdown;
         assert!(d.contains("<p class=\"abstract-title\">Summary</p>"), "{d}");
+    }
+
+    #[test]
+    fn literal_block_scalars_keep_their_lines() {
+        let lines = [
+            "---",
+            "abstract: |",
+            "  line one",
+            "  continues: here",
+            "",
+            "  Second paragraph.",
+            "title: X",
+            "---",
+        ];
+        let fm = parse_front_matter(&lines);
+        assert!(fm.diagnostics.is_empty(), "{:?}", fm.diagnostics);
+        assert_eq!(
+            get(&fm.meta, "abstract"),
+            Some(&Yaml::Str(
+                "line one\ncontinues: here\n\nSecond paragraph.\n".into()
+            ))
+        );
+        assert_eq!(get(&fm.meta, "title"), Some(&Yaml::Str("X".into())));
+
+        let trailing_space = ["---", "abstract: | ", "  line one", "---"];
+        let fm = parse_front_matter(&trailing_space);
+        assert_eq!(
+            get(&fm.meta, "abstract"),
+            Some(&Yaml::Str("line one\n".into()))
+        );
+    }
+
+    #[test]
+    fn block_scalar_chomping() {
+        let strip = parse_front_matter(&[
+            "---",
+            "abstract: |-",
+            "  one",
+            "  two",
+            "",
+            "title: X",
+            "---",
+        ]);
+        assert_eq!(
+            get(&strip.meta, "abstract"),
+            Some(&Yaml::Str("one\ntwo".into()))
+        );
+        assert_eq!(get(&strip.meta, "title"), Some(&Yaml::Str("X".into())));
+
+        let keep = parse_front_matter(&["---", "abstract: |+", "  one", "", "", "title: X", "---"]);
+        assert_eq!(
+            get(&keep.meta, "abstract"),
+            Some(&Yaml::Str("one\n\n\n".into()))
+        );
+        assert_eq!(get(&keep.meta, "title"), Some(&Yaml::Str("X".into())));
+    }
+
+    #[test]
+    fn folded_block_scalars_join_lines() {
+        let folded =
+            parse_front_matter(&["---", "abstract: >", "  one", "  two", "", "  three", "---"]);
+        assert!(folded.diagnostics.is_empty(), "{:?}", folded.diagnostics);
+        assert_eq!(
+            get(&folded.meta, "abstract"),
+            Some(&Yaml::Str("one two\nthree\n".into()))
+        );
+
+        let stripped = parse_front_matter(&["---", "abstract: >-", "  one", "  two", "---"]);
+        assert_eq!(
+            get(&stripped.meta, "abstract"),
+            Some(&Yaml::Str("one two".into()))
+        );
+
+        // A more-indented line keeps the breaks around it.
+        let indented =
+            parse_front_matter(&["---", "abstract: >", "  a", "    indented", "  b", "---"]);
+        assert_eq!(
+            get(&indented.meta, "abstract"),
+            Some(&Yaml::Str("a\n  indented\nb\n".into()))
+        );
+    }
+
+    #[test]
+    fn block_scalars_under_maps_and_in_list_items() {
+        let sub = parse_front_matter(&[
+            "---",
+            "format:",
+            "  html:",
+            "    include-in-header: |",
+            "      <script>a: b</script>",
+            "  toc: true",
+            "title: X",
+            "---",
+        ]);
+        assert!(sub.diagnostics.is_empty(), "{:?}", sub.diagnostics);
+        let Some(Yaml::Map(format)) = get(&sub.meta, "format") else {
+            panic!()
+        };
+        let Some(Yaml::Map(html)) = get(format, "html") else {
+            panic!()
+        };
+        assert_eq!(
+            get(html, "include-in-header"),
+            Some(&Yaml::Str("<script>a: b</script>\n".into()))
+        );
+        assert_eq!(get(&sub.meta, "title"), Some(&Yaml::Str("X".into())));
+
+        let item = parse_front_matter(&[
+            "---",
+            "author:",
+            "  - name: Ada",
+            "    note: |",
+            "      Pioneer",
+            "      of computing.",
+            "  - name: Grace",
+            "---",
+        ]);
+        assert!(item.diagnostics.is_empty(), "{:?}", item.diagnostics);
+        let Some(Yaml::List(authors)) = get(&item.meta, "author") else {
+            panic!()
+        };
+        assert_eq!(authors.len(), 2);
+        let Yaml::Map(ada) = &authors[0] else {
+            panic!()
+        };
+        assert_eq!(
+            get(ada, "note"),
+            Some(&Yaml::Str("Pioneer\nof computing.\n".into()))
+        );
+        assert_eq!(get(ada, "name"), Some(&Yaml::Str("Ada".into())));
+    }
+
+    #[test]
+    fn an_empty_block_scalar_is_empty() {
+        let fm = parse_front_matter(&["---", "abstract: |", "title: X", "---"]);
+        assert!(fm.diagnostics.is_empty(), "{:?}", fm.diagnostics);
+        assert_eq!(get(&fm.meta, "abstract"), Some(&Yaml::Str(String::new())));
+        assert_eq!(get(&fm.meta, "title"), Some(&Yaml::Str("X".into())));
+    }
+
+    #[test]
+    fn a_block_abstract_has_a_paragraph_per_block() {
+        let d =
+            compose("---\ntitle: T\nabstract: |\n  First paragraph.\n\n  Second paragraph.\n---\n")
+                .markdown;
+        assert!(
+            d.contains("<div class=\"abstract\"><p class=\"abstract-title\">Abstract</p><p>First paragraph.</p><p>Second paragraph.</p></div>"),
+            "{d}"
+        );
     }
 
     #[test]
