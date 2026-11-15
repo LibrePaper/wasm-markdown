@@ -101,6 +101,11 @@ pub(crate) struct Context<'a> {
     pub files: &'a dyn Fn(&str) -> Option<String>,
     /// The interface strings the draft prints.
     pub strings: &'a Strings,
+    /// Where each line of the expanded document came from, by index.
+    pub origin: &'a [includes::Origin],
+    /// The saved values of the host's executable inline code spans; empty
+    /// for the draft Pandoc reads.
+    pub inlines: &'a [InlineValue],
     /// Whether this is the draft Pandoc reads for a PDF: raw content for
     /// other formats is kept as written there instead of dropped.
     pub for_pandoc: bool,
@@ -296,7 +301,10 @@ pub(crate) fn backtick_run(line: &str, i: usize) -> usize {
 
 /// Makes the common cross references readable. Inline code and links are
 /// opaque; an unresolved reference stays source text.
-fn prose(line: &str, ctx: &mut Context) -> String {
+///
+/// `index` is the line's index in the expanded document, which locates it in
+/// its file for the saved inline values.
+fn prose(line: &str, index: usize, ctx: &mut Context) -> String {
     let refs = ctx.refs;
     let b = line.as_bytes();
     let mut out = String::with_capacity(line.len());
@@ -325,7 +333,13 @@ fn prose(line: &str, ctx: &mut Context) -> String {
                     &refs::crossrefs(&line[text_start..i], refs, ctx.for_pandoc),
                     ctx,
                 ));
-                out.push_str(&line[i..e]);
+                match (b[i] == b'`')
+                    .then(|| inline_value(line, i, e, index, ctx))
+                    .flatten()
+                {
+                    Some(html) => out.push_str(&html),
+                    None => out.push_str(&line[i..e]),
+                }
                 i = e;
                 text_start = e;
             }
@@ -339,6 +353,64 @@ fn prose(line: &str, ctx: &mut Context) -> String {
     out
 }
 
+/// Whether the content of an inline code span is executable: the rule of the
+/// browser's `executableInline`, which decides which spans get a saved value.
+fn executable_inline(content: &str) -> bool {
+    const ENGINES: [&str; 6] = ["r", "python", "julia", "ojs", "bash", "embed"];
+    let s = content.trim();
+    ENGINES.iter().any(|name| {
+        // `r expr`, or `r}` as the browser's rule accepts it.
+        let bare = s.strip_prefix(name).is_some_and(|rest| {
+            (rest.starts_with(char::is_whitespace) && !rest.trim_start().is_empty())
+                || rest.starts_with('}')
+        });
+        // `{r} expr` and its siblings.
+        let braced = s
+            .strip_prefix('{')
+            .and_then(|rest| rest.strip_prefix(name))
+            .and_then(|rest| rest.strip_prefix('}'))
+            .is_some_and(|rest| !rest.trim_start().is_empty());
+        bare || braced
+    })
+}
+
+/// The replacement for the executable inline code span `line[start..end]`
+/// (its opening run at `start`), when the host saved a value for it: the span
+/// is in the file and line `index` stands at, and it starts at the saved
+/// column. None leaves the span as it is.
+fn inline_value(
+    line: &str,
+    start: usize,
+    end: usize,
+    index: usize,
+    ctx: &Context,
+) -> Option<String> {
+    let run = backtick_run(line, start);
+    if !executable_inline(&line[start + run..end - run]) {
+        return None;
+    }
+    let at = ctx.origin.get(index)?;
+    // The column is the byte just after the opening run, 1-based.
+    let column = start + run + 1;
+    let value = ctx.inlines.iter().find(|v| {
+        v.line == at.line + 1
+            && v.column == column
+            && match &v.path {
+                None => at.main,
+                Some(p) => !at.main && *p == at.file,
+            }
+    })?;
+    Some(if value.stale {
+        format!(
+            "<span class=\"quarto-inline-value quarto-inline-stale\" title=\"{}\">{}</span>",
+            escape(&ctx.strings.output_stale),
+            value.html
+        )
+    } else {
+        format!("<span class=\"quarto-inline-value\">{}</span>", value.html)
+    })
+}
+
 // --------------------------------------------------------------- the draft
 
 /// What the host knows that the source does not: the saved outputs of cells
@@ -347,6 +419,7 @@ fn prose(line: &str, ctx: &mut Context) -> String {
 #[derive(Clone, Debug, Default)]
 pub struct Extras {
     pub outputs: Vec<Output>,
+    pub inlines: Vec<InlineValue>,
     pub note: String,
     pub strings: Strings,
 }
@@ -358,6 +431,20 @@ pub struct Output {
     /// The project path of the file the cell is in; `None` for the main file.
     /// Normalized like an include's: relative to the including file, `..` and
     /// `.` resolved, forward slashes, no leading `./`.
+    pub path: Option<String>,
+    pub html: String,
+    pub stale: bool,
+}
+
+/// The saved value of one executable inline code span, such as `` `r mean(x)` ``.
+#[derive(Clone, Debug)]
+pub struct InlineValue {
+    /// The 1-based line of the span in its file.
+    pub line: usize,
+    /// The 1-based byte column just after the span's opening backtick run.
+    pub column: usize,
+    /// The project path of the file the span is in; `None` for the main file.
+    /// Normalized like [`Output::path`].
     pub path: Option<String>,
     pub html: String,
     pub stale: bool,
@@ -415,6 +502,26 @@ impl Extras {
                 if let (true, Some(html)) = (line > 0, html) {
                     extras.outputs.push(Output {
                         line,
+                        path: item
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .filter(|p| !p.is_empty())
+                            .map(str::to_string),
+                        html: html.to_string(),
+                        stale: item.get("stale").and_then(|v| v.as_bool()).unwrap_or(false),
+                    });
+                }
+            }
+        }
+        if let Some(list) = value.get("inlines").and_then(|v| v.as_array()) {
+            for item in list {
+                let line = item.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let column = item.get("column").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let html = item.get("html").and_then(|v| v.as_str());
+                if let (true, true, Some(html)) = (line > 0, column > 0, html) {
+                    extras.inlines.push(InlineValue {
+                        line,
+                        column,
                         path: item
                             .get("path")
                             .and_then(|v| v.as_str())
@@ -590,6 +697,7 @@ pub fn draft(
         _ => Vec::new(),
     };
     let references = refs::references(&parsed, &lines);
+    let inlines: &[InlineValue] = if for_pandoc { &[] } else { &extras.inlines };
     let mut ctx = Context {
         path,
         meta: &parsed.fm.meta,
@@ -597,6 +705,8 @@ pub fn draft(
         refs: &references,
         files,
         strings: &extras.strings,
+        origin,
+        inlines,
         for_pandoc,
         diagnostics: Vec::new(),
     };
@@ -754,7 +864,7 @@ pub fn draft(
                 }
                 tables::mark(&lines, i, &ctx, &mut out);
                 // Included text has no one-to-one source line.
-                out.push(&prose(&expanded, &mut ctx), mapped, (i, i));
+                out.push(&prose(&expanded, i, &mut ctx), mapped, (i, i));
             }
             i += 1;
             continue;
@@ -953,5 +1063,111 @@ pub(crate) mod tests {
             .as_str()
             .unwrap()
             .ends_with("</header>\n\nBody"));
+    }
+
+    /// Saved inline values for `source`, read from the JSON of the host.
+    fn with_inlines(source: &str, files: &[(&str, &str)], json: &str) -> Draft {
+        let table: Vec<(String, String)> = files
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        let read = move |p: &str| table.iter().find(|(k, _)| k == p).map(|(_, v)| v.clone());
+        draft(source, "paper.qmd", &read, &Extras::from_json(json), false)
+    }
+
+    #[test]
+    fn an_inline_value_replaces_its_code_span() {
+        // The backtick of `r mean(x)` is byte 8, so its column is 10.
+        let source = "Mean is `r mean(x)` here.";
+        let json = r#"{"inlines":[{"line":1,"column":10,"html":"4.2","stale":false}]}"#;
+        let d = with_outputs(source, json).markdown;
+        assert_eq!(
+            d,
+            "Mean is <span class=\"quarto-inline-value\">4.2</span> here."
+        );
+    }
+
+    #[test]
+    fn the_braced_engine_form_is_replaced_too() {
+        // The backtick of `{r} x` is byte 6, so its column is 8.
+        let source = "Value `{r} x` ok";
+        let json = r#"{"inlines":[{"line":1,"column":8,"html":"7"}]}"#;
+        assert_eq!(
+            with_outputs(source, json).markdown,
+            "Value <span class=\"quarto-inline-value\">7</span> ok"
+        );
+    }
+
+    #[test]
+    fn only_the_matched_span_of_two_on_one_line_is_replaced() {
+        // The second backtick of `r a` and `r b` is byte 10, so its column is 12.
+        let source = "`r a` and `r b`";
+        let json = r#"{"inlines":[{"line":1,"column":12,"html":"B"}]}"#;
+        assert_eq!(
+            with_outputs(source, json).markdown,
+            "`r a` and <span class=\"quarto-inline-value\">B</span>"
+        );
+    }
+
+    #[test]
+    fn spans_without_a_matching_entry_are_left_as_they_are() {
+        let source = "`r a` and plain `code` here";
+        let plain = compose(source).markdown;
+        // A column that is off by one, and a plain code span with an entry:
+        // its backtick is byte 16, so its column is 18.
+        let off = r#"{"inlines":[{"line":1,"column":3,"html":"X"}]}"#;
+        assert_eq!(with_outputs(source, off).markdown, plain);
+        let plain_code = r#"{"inlines":[{"line":1,"column":18,"html":"X"}]}"#;
+        assert_eq!(with_outputs(source, plain_code).markdown, plain);
+        assert!(plain.contains("`code`"), "{plain}");
+    }
+
+    #[test]
+    fn a_stale_value_gets_the_class_and_the_title() {
+        let source = "Mean is `r mean(x)`.";
+        let json = r#"{"inlines":[{"line":1,"column":10,"html":"4.2","stale":true}]}"#;
+        let d = with_outputs(source, json).markdown;
+        assert_eq!(
+            d,
+            "Mean is <span class=\"quarto-inline-value quarto-inline-stale\" title=\"Output from an earlier version of this cell\">4.2</span>."
+        );
+    }
+
+    #[test]
+    fn an_entry_for_an_included_file_applies_only_there() {
+        let source = "`r x` main\n\n{{< include part.qmd >}}\n";
+        let files = [("part.qmd", "`r x` inc\n")];
+        // Line 1 of the included file, column 2; the main file's line 1 has
+        // the same span at the same place and must stay.
+        let json = r#"{"inlines":[{"line":1,"column":2,"path":"part.qmd","html":"INC"}]}"#;
+        let d = with_inlines(source, &files, json).markdown;
+        assert_eq!(d.matches("INC").count(), 1, "{d}");
+        assert!(
+            d.contains("<span class=\"quarto-inline-value\">INC</span> inc"),
+            "{d}"
+        );
+        assert!(d.contains("`r x` main"), "{d}");
+    }
+
+    #[test]
+    fn junk_inline_entries_are_ignored() {
+        let source = "`r x` here\n";
+        let junk = r#"{"inlines":[
+            {"line":0,"column":2,"html":"a"},
+            {"line":1,"column":0,"html":"b"},
+            {"line":1,"column":2},
+            {"line":1,"column":2,"html":5},
+            "nope"
+        ]}"#;
+        let extras = Extras::from_json(junk);
+        assert!(extras.inlines.is_empty());
+        assert_eq!(with_outputs(source, junk).markdown, compose(source).markdown);
+    }
+
+    #[test]
+    fn a_span_in_fenced_code_is_never_replaced() {
+        let source = "```\n`r x` in code\n```\n";
+        let json = r#"{"inlines":[{"line":2,"column":2,"html":"X"}]}"#;
+        assert_eq!(with_outputs(source, json).markdown, source);
     }
 }

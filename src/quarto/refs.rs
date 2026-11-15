@@ -1982,7 +1982,7 @@ pub(crate) fn line(i: usize, lines: &[&str], ctx: &mut Context, out: &mut Out) -
                 out.block(&refs.table_open_in(id, caption, location, &classes), origin);
                 super::tables::mark(lines, rows.start, ctx, out);
                 for l in rows.clone() {
-                    let text = prose(lines[l], ctx);
+                    let text = prose(lines[l], l, ctx);
                     out.push(&text, Some(l), (l, l));
                 }
                 out.block(&refs.table_close(id, caption, location), origin);
@@ -1991,7 +1991,7 @@ pub(crate) fn line(i: usize, lines: &[&str], ctx: &mut Context, out: &mut Out) -
         return Some(span.end + 1 - i);
     }
     let info = refs.divs.get(refs.inline.get(&i)?)?;
-    let text = prose(lines[i], ctx);
+    let text = prose(lines[i], i, ctx);
     out.push(&format!("{} {text}", refs.div_label(info)), Some(i), (i, i));
     Some(1)
 }
