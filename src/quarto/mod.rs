@@ -1161,7 +1161,10 @@ pub(crate) mod tests {
         ]}"#;
         let extras = Extras::from_json(junk);
         assert!(extras.inlines.is_empty());
-        assert_eq!(with_outputs(source, junk).markdown, compose(source).markdown);
+        assert_eq!(
+            with_outputs(source, junk).markdown,
+            compose(source).markdown
+        );
     }
 
     #[test]
