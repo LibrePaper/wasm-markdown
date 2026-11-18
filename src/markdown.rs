@@ -498,11 +498,14 @@ mod tests {
             "<!doctype html>",
             "<title>A Paper</title>",
             "id=\"a-paper\"", // heading ids, for links into the document
-            "<em>emphasis</em>",
-            "<a href=\"https://example.test\">link</a>",
+            // Inline elements carry `data-sourcepos` too, so their tags are
+            // matched by name only.
+            "<em ",
+            "emphasis</em>",
+            "href=\"https://example.test\"",
             "<table",
-            "<del>",
-            "<code>",
+            "<del",
+            "<code",
             "footnote",
         ] {
             assert!(
