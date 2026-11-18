@@ -20,6 +20,11 @@ more dangerous than the markdown around it. Task items carry `task` plus a state
 class on the `<li>`: `task-todo` for `[ ]`, `task-doing` for `[/]`, `task-done`
 for `[x]` or `[X]`, and `task-cancelled` for `[-]`.
 
+The stored page also says which lines of the source each block came from:
+`data-sourcepos="L:C-L:C"` on block elements, in the lines of the file the
+author wrote (for Quarto, of the `.qmd`, not its draft). Columns are approximate
+in Quarto. The editor's blocks (`compile_blocks`) do not carry it.
+
 Math between dollars — `$x^*$` in a sentence, `$$…$$` on its own lines — is
 kept as TeX, escaped inside a span tagged `data-math-style="inline"` or
 `"display"`, and not parsed as markdown: the stars are not emphasis and the

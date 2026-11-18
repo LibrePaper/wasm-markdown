@@ -57,6 +57,8 @@ mod tables;
 
 use std::collections::HashMap;
 
+use comrak::nodes::{AstNode, LineColumn, Sourcepos};
+
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::page::escape;
 
@@ -588,6 +590,54 @@ impl Draft {
     /// `{"markdown": "...", "line_map": [1, null, 2]}`.
     pub fn to_json(&self) -> String {
         serde_json::json!({ "markdown": self.markdown, "line_map": self.line_map }).to_string()
+    }
+}
+
+/// Puts the source's own lines on the nodes of a parsed draft, so the page's
+/// `data-sourcepos` names lines of the `.qmd` the author wrote, not lines of the
+/// draft, which has a title block and generated output the source does not.
+///
+/// Indexing: `line_map` and `origin` are indexed from 0 by draft line (draft
+/// line `n` is index `n - 1`), and their values are 1-based source lines.
+/// `origin` has an entry for every draft line: a generated line carries the
+/// range of the content it belongs to (a title block the front matter, a
+/// cell's output the cell). So the only line without one is a line past the
+/// end of the draft, which takes the last one.
+///
+/// A node starts at the first source line of its first draft line and ends at
+/// the last source line of its last. A column is kept only where the draft line
+/// is a verbatim copy of one source line; anywhere else it is 1, because the
+/// draft's column says nothing about the source.
+pub(crate) fn source_positions<'a>(root: &'a AstNode<'a>, draft: &Draft) {
+    // Collect first, as the task promotion does: the walk and the edits share
+    // nodes.
+    let nodes: Vec<&'a AstNode<'a>> = root.descendants().collect();
+    for node in nodes {
+        let mut ast = node.data_mut();
+        let at = ast.sourcepos;
+        // A node comrak did not place in the draft has nothing to map.
+        if at.start.line == 0 {
+            continue;
+        }
+        ast.sourcepos = Sourcepos {
+            start: source_point(draft, at.start, true),
+            end: source_point(draft, at.end, false),
+        };
+    }
+}
+
+/// The source position of a draft position: its line is the first (`start`) or
+/// last source line of the draft line it stands on.
+fn source_point(draft: &Draft, at: LineColumn, start: bool) -> LineColumn {
+    let Some(last) = draft.origin.len().checked_sub(1) else {
+        return LineColumn { line: 1, column: 1 };
+    };
+    let index = (at.line.max(1) - 1).min(last);
+    let (first, end) = draft.origin[index];
+    let verbatim = first == end && matches!(draft.line_map.get(index), Some(Some(_)));
+    LineColumn {
+        line: if start { first } else { end },
+        column: if verbatim { at.column } else { 1 },
     }
 }
 

@@ -7,7 +7,7 @@
 
 use std::fmt::Write;
 
-use comrak::html::Context;
+use comrak::html::{render_sourcepos, Context};
 use comrak::nodes::{AstNode, NodeTaskItem, NodeValue};
 use comrak::options::{Extension, Parse, Render};
 use comrak::{Arena, Options};
@@ -16,7 +16,9 @@ use crate::page;
 
 /// The one markdown configuration this project has: the command line, the
 /// server and the browser build all render through it, so a document reads the
-/// same whichever of them produced it.
+/// same whichever of them produced it. It does not write source positions: the
+/// stored page turns those on with [`with_source_positions`], and the blocks the
+/// editor shows are rendered without them.
 pub fn options() -> Options<'static> {
     let extension = Extension {
         table: true,
@@ -65,6 +67,14 @@ pub fn quarto_options() -> Options<'static> {
     options.extension.description_lists = true;
     options.extension.superscript = true;
     options.extension.subscript = true;
+    options
+}
+
+/// The same options with `data-sourcepos` on every block, so the reader can tell
+/// which lines of the source file a selection came from. Only the stored page
+/// asks for them: they are positions in the file, not part of the markdown.
+pub fn with_source_positions(mut options: Options<'static>) -> Options<'static> {
+    options.render.sourcepos = true;
     options
 }
 
@@ -157,9 +167,11 @@ comrak::create_formatter!(TaskFormatter, {
     },
 });
 
-fn task_item(
+// The source position goes where comrak puts it: on the `<li>` of an item in a
+// list, and on the checkbox otherwise.
+fn task_item<'a>(
     context: &mut Context<()>,
-    node: &AstNode,
+    node: &'a AstNode<'a>,
     entering: bool,
     nti: &NodeTaskItem,
 ) -> std::fmt::Result {
@@ -171,9 +183,14 @@ fn task_item(
         if write_li {
             context.write_str("<li class=\"task task-")?;
             context.write_str(task_state(nti.symbol))?;
-            context.write_str("\">")?;
+            context.write_str("\"")?;
+            render_sourcepos(context, node)?;
+            context.write_str(">")?;
         }
         context.write_str("<input type=\"checkbox\"")?;
+        if !write_li {
+            render_sourcepos(context, node)?;
+        }
         if task_state(nti.symbol) == "done" {
             context.write_str(" checked=\"\"")?;
         }
@@ -208,9 +225,22 @@ pub fn format_html<'a>(
 /// Renders a markdown source to body HTML through the task-aware path: parse,
 /// promote the `[/]` and `[-]` items, then format.
 pub fn to_html(source: &str, options: &Options) -> String {
+    to_html_of(source, options, None)
+}
+
+/// As [`to_html`]. With a Quarto draft, the parsed tree is first put on the
+/// source's own lines, so its source positions name the file, not the draft.
+pub(crate) fn to_html_of(
+    source: &str,
+    options: &Options,
+    draft: Option<&crate::quarto::Draft>,
+) -> String {
     let arena = Arena::new();
     let root = comrak::parse_document(&arena, source, options);
     promote_tasks(root);
+    if let Some(draft) = draft {
+        crate::quarto::source_positions(root, draft);
+    }
     let mut html = String::new();
     // Writing to a String cannot fail.
     let _ = format_html(root, options, &mut html);
@@ -242,13 +272,17 @@ pub fn render(source: &str, title: &str) -> String {
 
 /// The same, with somewhere for the figures to come from.
 pub fn render_with(source: &str, title: &str, assets: Resolve) -> String {
-    let body = rewrite_images(&render_body(source), assets);
+    let html = to_html(source, &with_source_positions(options()));
+    let body = rewrite_images(&html, assets);
     page::page(title, "", &body)
 }
 
-/// The same for a Quarto draft, with the Quarto options.
-fn render_quarto_with(source: &str, title: &str, assets: Resolve) -> String {
-    let body = rewrite_images(&colwidths(&to_html(source, &quarto_options())), assets);
+/// The same for a Quarto draft, with the Quarto options. The draft's positions
+/// are mapped back to the source's lines before the page is written.
+fn render_quarto_with(draft: &crate::quarto::Draft, title: &str, assets: Resolve) -> String {
+    let options = with_source_positions(quarto_options());
+    let html = to_html_of(&draft.markdown, &options, Some(draft));
+    let body = rewrite_images(&colwidths(&html), assets);
     page::page(title, "", &body)
 }
 
@@ -287,9 +321,16 @@ pub(crate) fn colwidths(html: &str) -> String {
         };
         rest = &after[close + 3..];
         let tail = rest.trim_start();
-        if let Some(table) = tail.strip_prefix("<table>") {
-            out.push_str(&format!("<table{class}>{group}"));
-            rest = table;
+        // The table's own tag, which on a page carries `data-sourcepos`: that
+        // stays after the class, and the group goes after the tag.
+        if let Some(table) = tail.strip_prefix("<table") {
+            if let Some(end) = table.find('>') {
+                let attributes = &table[..end];
+                if attributes.is_empty() || attributes.starts_with(' ') {
+                    out.push_str(&format!("<table{class}{attributes}>{group}"));
+                    rest = &table[end + 1..];
+                }
+            }
         }
     }
     out.push_str(rest);
@@ -421,8 +462,8 @@ pub fn compile_quarto(
 ) -> crate::diagnostic::Compiled {
     let extras = crate::quarto::Extras::load(files);
     let draft = crate::quarto::draft(source, path, files, &extras, false);
-    let mut compiled =
-        crate::diagnostic::Compiled::page(render_quarto_with(&draft.markdown, title, assets));
+    let page = render_quarto_with(&draft, title, assets);
+    let mut compiled = crate::diagnostic::Compiled::page(page);
     compiled.diagnostics = draft.diagnostics;
     compiled
 }
@@ -459,7 +500,7 @@ mod tests {
             "id=\"a-paper\"", // heading ids, for links into the document
             "<em>emphasis</em>",
             "<a href=\"https://example.test\">link</a>",
-            "<table>",
+            "<table",
             "<del>",
             "<code>",
             "footnote",
@@ -704,5 +745,49 @@ mod tests {
         let html = render_body("- [/]no space\n");
         assert!(html.contains("[/]no space"), "{html}");
         assert!(!html.contains("task-doing"), "{html}");
+    }
+
+    #[test]
+    fn a_page_carries_the_source_lines_of_its_blocks() {
+        let html = render("# Title\n\nPara one.\n\n- item\n", "Title");
+        assert!(html.contains("data-sourcepos=\"1:1-1:7\""), "{html}");
+        assert!(html.contains("<p data-sourcepos=\"3:1-3:9\">"), "{html}");
+    }
+
+    #[test]
+    fn a_page_after_front_matter_counts_the_front_matter_lines() {
+        // Comrak numbers the whole file, so the paragraph is on line 5.
+        let html = render("---\ntitle: Paper\n---\n\nPara.\n", "Paper");
+        assert!(
+            html.contains("<p data-sourcepos=\"5:1-5:5\">Para.</p>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_quarto_page_names_the_lines_of_the_qmd_not_of_its_draft() {
+        // The title block takes the place of the front matter, and the cell
+        // is shown as a block of its own, so the draft is not the file.
+        let source = "---\ntitle: Paper\n---\n\nIntro.\n\n```{r}\n#| label: fig-a\nplot(1)\n```\n\nAfter the cell.\n";
+        let page = compile_for(source, "Paper", "paper.qmd", &no_files, &no_assets)
+            .into_result()
+            .unwrap();
+        assert!(
+            page.contains("<p data-sourcepos=\"5:1-5:6\">Intro.</p>"),
+            "{page}"
+        );
+        assert!(
+            page.contains("<p data-sourcepos=\"12:1-12:15\">After the cell.</p>"),
+            "{page}"
+        );
+    }
+
+    #[test]
+    fn a_page_task_item_carries_its_source_line() {
+        let html = render("- [x] done\n", "T");
+        assert!(
+            html.contains("<li class=\"task task-done\" data-sourcepos=\"1:1-1:10\">"),
+            "{html}"
+        );
     }
 }

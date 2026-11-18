@@ -11,7 +11,9 @@
 //! at the markers. Rendering each node separately would restart the heading
 //! id counter at every node and lose the document-wide ids; cutting finished
 //! HTML apart by tag would need an HTML parser. Markers need neither, and the
-//! HTML of each block is byte for byte what the page holds.
+//! HTML of each block is what the page holds, less the `data-sourcepos` the page
+//! adds: blocks are rendered without it, and the editor reads the lines from
+//! `from_line` and `to_line` instead.
 //!
 //! The blocks are found in the *draft*: for Markdown the source itself, for
 //! Quarto the draft [`crate::quarto`] composes. Comrak knows the draft line of
@@ -231,6 +233,13 @@ mod tests {
         assert!(blocks[2].html.starts_with("<ul>") && blocks[2].html.contains("<li>two</li>"));
         assert!(blocks[3].html.starts_with("<table>"));
         assert!(blocks[4].html.starts_with("<pre"));
+        assert!(!blocks.iter().any(|b| b.html.contains("data-sourcepos")));
+    }
+
+    #[test]
+    fn a_quarto_block_has_no_source_positions() {
+        let blocks = run("# Title\n\n- [x] done\n", "paper.qmd", &no_files);
+        assert!(!blocks.is_empty());
         assert!(!blocks.iter().any(|b| b.html.contains("data-sourcepos")));
     }
 
